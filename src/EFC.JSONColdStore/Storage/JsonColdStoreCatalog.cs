@@ -1,4 +1,3 @@
-using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -32,7 +31,7 @@ internal sealed class JsonColdStoreCatalog
         if (File.Exists(storeFile))
             return await LoadAndValidateAsync(cancellationToken);
 
-        var metadata = JsonColdStoreStoreMetadata.CreateNew(_options, GetProviderVersion());
+        var metadata = JsonColdStoreStoreMetadata.CreateNew(_options, JsonColdStoreProviderInfo.Version);
         await WriteMetadataAsync(metadata, cancellationToken);
         return metadata;
     }
@@ -93,13 +92,6 @@ internal sealed class JsonColdStoreCatalog
     private string GetStoreFilePath() =>
         JsonColdStorePathValidator.GetSafeChildPath(_options.DatabaseDirectory, StoreFileName);
 
-    private static string GetProviderVersion()
-    {
-        var assembly = typeof(JsonColdStoreCatalog).Assembly;
-        return assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
-            ?? assembly.GetName().Version?.ToString()
-            ?? "0.0.0";
-    }
 }
 
 internal sealed record JsonColdStoreStoreMetadata
