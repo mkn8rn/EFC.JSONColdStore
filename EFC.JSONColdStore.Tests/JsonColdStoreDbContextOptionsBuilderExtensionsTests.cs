@@ -343,6 +343,84 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
     }
 
     [Fact]
+    public void SaveChangesRejectsDuplicateUniqueIndexBatchBeforeWritingRecords()
+    {
+        var directory = TestDirectory("savechanges-batch-unique-" + Guid.NewGuid().ToString("N"));
+        var builder = new DbContextOptionsBuilder<UniqueWritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+        var firstId = Guid.Parse("61000000-0000-0000-0000-000000000007");
+        var secondId = Guid.Parse("61000000-0000-0000-0000-000000000008");
+        using var context = new UniqueWritableDbContext(builder.Options);
+        context.Entities.AddRange(
+            new WritableEntity
+            {
+                Id = firstId,
+                Value = "batch-duplicate",
+            },
+            new WritableEntity
+            {
+                Id = secondId,
+                Value = "batch-duplicate",
+            });
+
+        var exception = Assert.Throws<InvalidOperationException>(() => context.SaveChanges());
+
+        Assert.Contains("unique index", exception.Message);
+        Assert.False(File.Exists(CurrentRecordPath(directory, firstId)));
+        Assert.False(File.Exists(CurrentRecordPath(directory, secondId)));
+    }
+
+    [Fact]
+    public async Task SaveChangesRejectsPersistedUniqueConflictBeforeWritingEarlierBatchRecord()
+    {
+        var directory = TestDirectory("savechanges-preflight-unique-" + Guid.NewGuid().ToString("N"));
+        var builder = new DbContextOptionsBuilder<UniqueWritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+        var existingId = Guid.Parse("61000000-0000-0000-0000-000000000009");
+        var validId = Guid.Parse("61000000-0000-0000-0000-000000000010");
+        var duplicateId = Guid.Parse("61000000-0000-0000-0000-000000000011");
+
+        using (var setupContext = new UniqueWritableDbContext(builder.Options))
+        {
+            setupContext.Entities.Add(new WritableEntity
+            {
+                Id = existingId,
+                Value = "persisted",
+            });
+            setupContext.SaveChanges();
+        }
+
+        using (var context = new UniqueWritableDbContext(builder.Options))
+        {
+            context.Entities.AddRange(
+                new WritableEntity
+                {
+                    Id = validId,
+                    Value = "valid-new",
+                },
+                new WritableEntity
+                {
+                    Id = duplicateId,
+                    Value = "persisted",
+                });
+
+            var exception = Assert.Throws<InvalidOperationException>(() => context.SaveChanges());
+
+            Assert.Contains("unique index", exception.Message);
+            Assert.False(File.Exists(CurrentRecordPath(directory, validId)));
+            Assert.False(File.Exists(CurrentRecordPath(directory, duplicateId)));
+        }
+
+        using var readContext = new UniqueWritableDbContext(builder.Options);
+        var matches = await readContext.Database.ReadJsonColdStoreIndexAsync<WritableEntity>(
+            nameof(WritableEntity.Value),
+            "persisted");
+
+        Assert.Single(matches);
+        Assert.Equal(existingId, matches[0].Id);
+    }
+
+    [Fact]
     public async Task SaveChangesAllowsSameRecordCurrentUniqueIndexValue()
     {
         var directory = TestDirectory("savechanges-current-unique-same-" + Guid.NewGuid().ToString("N"));
@@ -370,6 +448,56 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
 
         Assert.NotNull(read);
         Assert.Equal(2, read.Score);
+    }
+
+    [Fact]
+    public async Task SaveChangesAllowsReplacingDeletedUniqueIndexValueInSameBatch()
+    {
+        var directory = TestDirectory("savechanges-replace-unique-" + Guid.NewGuid().ToString("N"));
+        var builder = new DbContextOptionsBuilder<UniqueWritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+        var deletedId = Guid.Parse("61000000-0000-0000-0000-000000000012");
+        var replacementId = Guid.Parse("61000000-0000-0000-0000-000000000013");
+
+        using (var setupContext = new UniqueWritableDbContext(builder.Options))
+        {
+            setupContext.Entities.Add(new WritableEntity
+            {
+                Id = deletedId,
+                Value = "replace-me",
+            });
+            setupContext.SaveChanges();
+        }
+
+        using (var context = new UniqueWritableDbContext(builder.Options))
+        {
+            context.Entities.Remove(new WritableEntity
+            {
+                Id = deletedId,
+                Value = "replace-me",
+            });
+            context.Entities.Add(new WritableEntity
+            {
+                Id = replacementId,
+                Value = "replace-me",
+                Score = 3,
+            });
+
+            Assert.Equal(2, context.SaveChanges());
+        }
+
+        using var readContext = new UniqueWritableDbContext(builder.Options);
+        var deleted = await readContext.Database.ReadJsonColdStoreAsync<WritableEntity>(deletedId);
+        var replacement = await readContext.Database.ReadJsonColdStoreAsync<WritableEntity>(replacementId);
+        var matches = await readContext.Database.ReadJsonColdStoreIndexAsync<WritableEntity>(
+            nameof(WritableEntity.Value),
+            "replace-me");
+
+        Assert.Null(deleted);
+        Assert.NotNull(replacement);
+        Assert.Equal(3, replacement.Score);
+        Assert.Single(matches);
+        Assert.Equal(replacementId, matches[0].Id);
     }
 
     [Fact]
