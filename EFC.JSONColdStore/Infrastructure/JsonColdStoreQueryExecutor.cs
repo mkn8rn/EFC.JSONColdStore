@@ -402,6 +402,19 @@ internal static class JsonColdStoreQueryExecutor
             return indexed.ToList();
         }
 
+        var range = plan.Filters
+            .Select(filter => TryCreateRange(queryContext, filter))
+            .FirstOrDefault(candidate => candidate is not null && CanUseIndexedRange(entityDescriptor, candidate));
+
+        if (range is not null)
+        {
+            var indexed = await entityStore.ReadEntitiesByIndexedPropertyAsync<TEntity>(
+                    range.PropertyName,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            return indexed.ToList();
+        }
+
         if (options.FullScanPolicy != JsonColdStoreScanPolicy.AllowSilentScans)
         {
             throw Unsupported(
@@ -462,6 +475,18 @@ internal static class JsonColdStoreQueryExecutor
             && string.Equals(index.PropertyNames[0], seek.PropertyName, StringComparison.Ordinal));
     }
 
+    private static bool CanUseIndexedRange(
+        JsonColdStoreEntityDescriptor descriptor,
+        JsonColdStoreQueryRange? range)
+    {
+        if (range is null || range.Value is null)
+            return false;
+
+        return descriptor.Indexes.Any(index =>
+            index.PropertyNames.Length == 1
+            && string.Equals(index.PropertyNames[0], range.PropertyName, StringComparison.Ordinal));
+    }
+
     private static JsonColdStoreQuerySeek? TryCreateSeek(
         QueryContext queryContext,
         LambdaExpression filter)
@@ -489,6 +514,64 @@ internal static class JsonColdStoreQueryExecutor
 
         return new JsonColdStoreQuerySeek(property.Name, Evaluate(queryContext, valueExpression));
     }
+
+    private static JsonColdStoreQueryRange? TryCreateRange(
+        QueryContext queryContext,
+        LambdaExpression filter)
+    {
+        if (filter.Body is not BinaryExpression binary
+            || binary.NodeType is not (ExpressionType.GreaterThan
+                or ExpressionType.GreaterThanOrEqual
+                or ExpressionType.LessThan
+                or ExpressionType.LessThanOrEqual))
+        {
+            return null;
+        }
+
+        return TryCreateRange(
+                queryContext,
+                filter.Parameters[0],
+                binary.Left,
+                binary.Right,
+                binary.NodeType)
+            ?? TryCreateRange(
+                queryContext,
+                filter.Parameters[0],
+                binary.Right,
+                binary.Left,
+                InvertRangeOperator(binary.NodeType));
+    }
+
+    private static JsonColdStoreQueryRange? TryCreateRange(
+        QueryContext queryContext,
+        ParameterExpression parameter,
+        Expression memberExpression,
+        Expression valueExpression,
+        ExpressionType operatorType)
+    {
+        var unwrappedMember = UnwrapConvert(memberExpression);
+        if (unwrappedMember is not MemberExpression member
+            || member.Expression != parameter
+            || member.Member is not PropertyInfo property)
+        {
+            return null;
+        }
+
+        return new JsonColdStoreQueryRange(
+            property.Name,
+            Evaluate(queryContext, valueExpression),
+            operatorType);
+    }
+
+    private static ExpressionType InvertRangeOperator(ExpressionType operatorType) =>
+        operatorType switch
+        {
+            ExpressionType.GreaterThan => ExpressionType.LessThan,
+            ExpressionType.GreaterThanOrEqual => ExpressionType.LessThanOrEqual,
+            ExpressionType.LessThan => ExpressionType.GreaterThan,
+            ExpressionType.LessThanOrEqual => ExpressionType.GreaterThanOrEqual,
+            _ => operatorType,
+        };
 
     private static object? Evaluate(QueryContext queryContext, Expression expression)
     {
@@ -567,7 +650,7 @@ internal sealed record JsonColdStoreQueryPlan(
                 if (builder.Projection is not null)
                     throw Unsupported("Filtering after projection is not supported.");
 
-                builder.Filters.Add(UnquoteLambda(call.Arguments[1]));
+                AddFilters(builder, call.Arguments[1]);
                 return builder;
             }
 
@@ -632,7 +715,7 @@ internal sealed record JsonColdStoreQueryPlan(
                     if (builder.Projection is not null)
                         throw Unsupported("Predicate terminals after projection are not supported.");
 
-                    builder.Filters.Add(UnquoteLambda(call.Arguments[1]));
+                    AddFilters(builder, call.Arguments[1]);
                 }
 
                 builder.Terminal = methodName switch
@@ -653,6 +736,27 @@ internal sealed record JsonColdStoreQueryPlan(
                 throw Unsupported(
                     $"The LINQ query method '{methodName}' is not supported by JSONColdStore yet.");
         }
+    }
+
+    private static void AddFilters(JsonColdStoreQueryPlanBuilder builder, Expression expression)
+    {
+        var lambda = UnquoteLambda(expression);
+        foreach (var filterBody in SplitConjunction(lambda.Body))
+            builder.Filters.Add(Expression.Lambda(filterBody, lambda.Parameters));
+    }
+
+    private static IEnumerable<Expression> SplitConjunction(Expression expression)
+    {
+        if (expression is BinaryExpression { NodeType: ExpressionType.AndAlso } binary)
+        {
+            foreach (var left in SplitConjunction(binary.Left))
+                yield return left;
+            foreach (var right in SplitConjunction(binary.Right))
+                yield return right;
+            yield break;
+        }
+
+        yield return expression;
     }
 
     private static LambdaExpression UnquoteLambda(Expression expression)
@@ -688,6 +792,11 @@ internal sealed class JsonColdStoreQueryPlanBuilder(Type entityType)
 internal sealed record JsonColdStoreQueryOrdering(LambdaExpression KeySelector, bool Descending);
 
 internal sealed record JsonColdStoreQuerySeek(string PropertyName, object? Value);
+
+internal sealed record JsonColdStoreQueryRange(
+    string PropertyName,
+    object? Value,
+    ExpressionType OperatorType);
 
 internal enum JsonColdStoreQueryTerminal
 {

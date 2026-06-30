@@ -972,6 +972,100 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
     }
 
     [Fact]
+    public void LinqRangeUsesDeclaredIndexWithoutSilentScan()
+    {
+        var directory = TestDirectory("query-range-index-" + Guid.NewGuid().ToString("N"));
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+        using var context = new WritableDbContext(builder.Options);
+        context.Entities.AddRange(
+            new WritableEntity
+            {
+                Id = Guid.Parse("83000000-0000-0000-0000-000000000001"),
+                Value = "five",
+                Score = 5,
+            },
+            new WritableEntity
+            {
+                Id = Guid.Parse("83000000-0000-0000-0000-000000000002"),
+                Value = "ten",
+                Score = 10,
+            },
+            new WritableEntity
+            {
+                Id = Guid.Parse("83000000-0000-0000-0000-000000000003"),
+                Value = "twenty",
+                Score = 20,
+            });
+        context.SaveChanges();
+        var minimum = 10;
+        var maximum = 20;
+
+        var values = context.Entities
+            .Where(entity => entity.Score >= minimum && entity.Score < maximum)
+            .OrderBy(entity => entity.Score)
+            .Select(entity => entity.Value)
+            .ToList();
+
+        Assert.Equal(["ten"], values);
+    }
+
+    [Fact]
+    public async Task LinqRangeCountAsyncUsesDeclaredIndexWithoutSilentScan()
+    {
+        var directory = TestDirectory("query-async-range-index-" + Guid.NewGuid().ToString("N"));
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+        using var context = new WritableDbContext(builder.Options);
+        context.Entities.AddRange(
+            new WritableEntity
+            {
+                Id = Guid.Parse("83000000-0000-0000-0000-000000000004"),
+                Value = "low",
+                Score = 1,
+            },
+            new WritableEntity
+            {
+                Id = Guid.Parse("83000000-0000-0000-0000-000000000005"),
+                Value = "middle",
+                Score = 10,
+            },
+            new WritableEntity
+            {
+                Id = Guid.Parse("83000000-0000-0000-0000-000000000006"),
+                Value = "high",
+                Score = 20,
+            });
+        context.SaveChanges();
+        var minimum = 10;
+
+        var count = await context.Entities.CountAsync(entity => entity.Score >= minimum);
+
+        Assert.Equal(2, count);
+    }
+
+    [Fact]
+    public void LinqRangeThrowsWithoutDeclaredIndexByDefault()
+    {
+        var directory = TestDirectory("query-range-no-index-" + Guid.NewGuid().ToString("N"));
+        var builder = new DbContextOptionsBuilder<WritableDbContextWithoutIndex>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+        using var context = new WritableDbContextWithoutIndex(builder.Options);
+        context.Entities.Add(new WritableEntity
+        {
+            Id = Guid.Parse("83000000-0000-0000-0000-000000000007"),
+            Value = "indexed nowhere",
+            Score = 50,
+        });
+        context.SaveChanges();
+
+        var exception = Assert.Throws<NotSupportedException>(
+            () => context.Entities.Where(entity => entity.Score >= 10).ToList());
+
+        Assert.Contains("full scan", exception.Message);
+    }
+
+    [Fact]
     public void LinqProjectionOrdersPagesAndScansWhenSilentScansAreAllowed()
     {
         var directory = TestDirectory("query-projection-page-" + Guid.NewGuid().ToString("N"));
@@ -1204,6 +1298,7 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
         {
             entity.HasKey(value => value.Id);
             entity.HasIndex(value => value.Value);
+            entity.HasIndex(value => value.Score);
         });
         return modelBuilder.FinalizeModel();
     }
@@ -1218,6 +1313,7 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
             {
                 entity.HasKey(value => value.Id);
                 entity.HasIndex(value => value.Value);
+                entity.HasIndex(value => value.Score);
             });
         }
     }
@@ -1238,5 +1334,7 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
         public Guid Id { get; set; }
 
         public string Value { get; set; } = string.Empty;
+
+        public int Score { get; set; }
     }
 }

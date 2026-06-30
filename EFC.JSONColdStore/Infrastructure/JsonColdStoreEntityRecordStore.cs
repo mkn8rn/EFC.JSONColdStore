@@ -149,6 +149,56 @@ internal sealed class JsonColdStoreEntityRecordStore
         return results;
     }
 
+    internal async Task<IReadOnlyList<TEntity>> ReadEntitiesByIndexedPropertyAsync<TEntity>(
+        string propertyName,
+        CancellationToken cancellationToken = default)
+        where TEntity : class
+    {
+        var descriptor = _modelDescriptor.FindEntity(typeof(TEntity));
+        var index = descriptor.FindSinglePropertyIndex(propertyName);
+        await EnsureModelCatalogAsync(createIfMissing: false, cancellationToken);
+        var recordIds = await _indexStore.ReadAllRecordIdsAsync(
+            descriptor.EntityName,
+            index.StorageName,
+            cancellationToken);
+        var results = new List<TEntity>();
+        var seenRecordIds = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var recordId in recordIds)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!_session.Records.RecordExists(descriptor.EntityName, recordId))
+                continue;
+
+            var payload = await _session.Records.ReadRecordAsync(
+                descriptor.EntityName,
+                recordId,
+                cancellationToken);
+            var entity = JsonSerializer.Deserialize<TEntity>(payload, EntityReadJsonOptions);
+            if (entity is not null)
+            {
+                seenRecordIds.Add(recordId);
+                results.Add(entity);
+            }
+        }
+
+        await foreach (var legacyRecord in _session.LegacyRecords.ReadAllRecordsAsync(
+            descriptor,
+            cancellationToken))
+        {
+            if (!seenRecordIds.Add(legacyRecord.RecordId))
+                continue;
+
+            var entity = JsonSerializer.Deserialize<TEntity>(
+                legacyRecord.Payload,
+                EntityReadJsonOptions);
+            if (entity is not null)
+                results.Add(entity);
+        }
+
+        return results;
+    }
+
     internal async IAsyncEnumerable<TEntity> ScanEntitiesAsync<TEntity>(
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
         where TEntity : class
