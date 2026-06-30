@@ -191,4 +191,25 @@ public static class JsonColdStoreDatabaseFacadeExtensions
             result.VerifiedRecords,
             result.QuarantinedRecords);
     }
+
+    /// <summary>
+    /// Creates a manual JSONColdStore snapshot while holding the writer lock.
+    /// </summary>
+    public static async Task<JsonColdStoreSnapshotResult> CreateJsonColdStoreSnapshotAsync(
+        this DatabaseFacade database,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(database);
+
+        var storeOptions = database.GetService<IDbContextOptions>()
+            .FindExtension<JsonColdStoreOptionsExtension>()?.Options
+            ?? throw new InvalidOperationException("JSONColdStore options are not configured.");
+
+        await using var session = await JsonColdStoreDatabaseSession.OpenAsync(
+            storeOptions,
+            acquireWriterLock: true,
+            cancellationToken);
+        var snapshots = new JsonColdStoreSnapshotStore(session.Options);
+        return await snapshots.CreateSnapshotAsync(cancellationToken);
+    }
 }

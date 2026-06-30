@@ -583,6 +583,75 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
     }
 
     [Fact]
+    public async Task CreateJsonColdStoreSnapshotAsyncCopiesStoreWithoutLocksOrNestedSnapshots()
+    {
+        var directory = TestDirectory("snapshot-copy-" + Guid.NewGuid().ToString("N"));
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+        var id = Guid.Parse("52000000-0000-0000-0000-000000000001");
+        using var context = new WritableDbContext(builder.Options);
+        context.Entities.Add(new WritableEntity
+        {
+            Id = id,
+            Value = "snapshot me",
+            Score = 11,
+        });
+        context.SaveChanges();
+        var preexistingSnapshot = Path.Combine(directory, "_snapshots", "20000101000000000000000-old");
+        Directory.CreateDirectory(preexistingSnapshot);
+        await File.WriteAllTextAsync(Path.Combine(preexistingSnapshot, "do-not-copy.txt"), "old snapshot");
+
+        var result = await context.Database.CreateJsonColdStoreSnapshotAsync();
+
+        Assert.True(Directory.Exists(result.SnapshotDirectory));
+        Assert.True(result.CopiedFiles > 0);
+        Assert.True(File.Exists(Path.Combine(result.SnapshotDirectory, "_store.json")));
+        Assert.True(File.Exists(Path.Combine(result.SnapshotDirectory, "_model.json")));
+        Assert.True(File.Exists(Path.Combine(
+            result.SnapshotDirectory,
+            "entities",
+            JsonColdStoreNameEncoder.EncodePathSegment(typeof(WritableEntity).FullName!),
+            "records",
+            JsonColdStoreNameEncoder.EncodePathSegment(id.ToString()) + ".jcs")));
+        Assert.False(Directory.Exists(Path.Combine(result.SnapshotDirectory, "_locks")));
+        Assert.False(Directory.Exists(Path.Combine(result.SnapshotDirectory, "_snapshots")));
+        Assert.False(File.Exists(Path.Combine(
+            result.SnapshotDirectory,
+            "_snapshots",
+            "20000101000000000000000-old",
+            "do-not-copy.txt")));
+    }
+
+    [Fact]
+    public async Task CreateJsonColdStoreSnapshotAsyncAppliesRetentionCount()
+    {
+        var directory = TestDirectory("snapshot-retention-" + Guid.NewGuid().ToString("N"));
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(
+            directory,
+            store => store
+                .UseFsyncOnWrite(false)
+                .UseSnapshots(enabled: true, TimeSpan.FromHours(1), retentionCount: 1));
+        using var context = new WritableDbContext(builder.Options);
+        context.Entities.Add(new WritableEntity
+        {
+            Id = Guid.Parse("52000000-0000-0000-0000-000000000002"),
+            Value = "retained",
+            Score = 12,
+        });
+        context.SaveChanges();
+
+        var first = await context.Database.CreateJsonColdStoreSnapshotAsync();
+        await Task.Delay(20);
+        var second = await context.Database.CreateJsonColdStoreSnapshotAsync();
+
+        Assert.False(Directory.Exists(first.SnapshotDirectory));
+        Assert.True(Directory.Exists(second.SnapshotDirectory));
+        Assert.Equal(1, second.DeletedSnapshots);
+        Assert.Single(Directory.EnumerateDirectories(Path.Combine(directory, "_snapshots")));
+    }
+
+    [Fact]
     public async Task ReadJsonColdStoreAsyncReadsLegacyPlainEntityWithoutCreatingMetadata()
     {
         var directory = TestDirectory("legacy-plain-" + Guid.NewGuid().ToString("N"));
