@@ -32,27 +32,35 @@ internal sealed class JsonColdStoreSnapshotStore
             snapshotName);
         Directory.CreateDirectory(snapshotDirectory);
 
-        var copiedFiles = 0;
-        foreach (var sourceFile in EnumerateSnapshotSourceFiles(_options.DatabaseDirectory))
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var relativePath = Path.GetRelativePath(_options.DatabaseDirectory, sourceFile);
-            var targetPath = JsonColdStorePathValidator.GetSafeChildPath(
+            var copiedFiles = 0;
+            foreach (var sourceFile in EnumerateSnapshotSourceFiles(_options.DatabaseDirectory))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var relativePath = Path.GetRelativePath(_options.DatabaseDirectory, sourceFile);
+                var targetPath = JsonColdStorePathValidator.GetSafeChildPath(
+                    snapshotDirectory,
+                    relativePath.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+                var targetDirectory = Path.GetDirectoryName(targetPath)
+                    ?? throw new InvalidOperationException("The snapshot target path has no directory.");
+
+                Directory.CreateDirectory(targetDirectory);
+                await CopyFileAsync(sourceFile, targetPath, cancellationToken).ConfigureAwait(false);
+                copiedFiles++;
+            }
+
+            var deletedSnapshots = PruneSnapshots(snapshotRoot, snapshotDirectory);
+            return new JsonColdStoreSnapshotResult(
                 snapshotDirectory,
-                relativePath.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
-            var targetDirectory = Path.GetDirectoryName(targetPath)
-                ?? throw new InvalidOperationException("The snapshot target path has no directory.");
-
-            Directory.CreateDirectory(targetDirectory);
-            await CopyFileAsync(sourceFile, targetPath, cancellationToken).ConfigureAwait(false);
-            copiedFiles++;
+                copiedFiles,
+                deletedSnapshots);
         }
-
-        var deletedSnapshots = PruneSnapshots(snapshotRoot, snapshotDirectory);
-        return new JsonColdStoreSnapshotResult(
-            snapshotDirectory,
-            copiedFiles,
-            deletedSnapshots);
+        catch
+        {
+            DeleteIncompleteSnapshot(snapshotDirectory);
+            throw;
+        }
     }
 
     private async Task CopyFileAsync(
@@ -98,6 +106,21 @@ internal sealed class JsonColdStoreSnapshotStore
         }
 
         return deleted;
+    }
+
+    private static void DeleteIncompleteSnapshot(string snapshotDirectory)
+    {
+        try
+        {
+            if (Directory.Exists(snapshotDirectory))
+                Directory.Delete(snapshotDirectory, recursive: true);
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
     }
 
     private static IEnumerable<string> EnumerateSnapshotSourceFiles(string directory)
