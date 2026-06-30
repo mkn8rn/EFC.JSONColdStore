@@ -165,6 +165,50 @@ internal sealed class JsonColdStoreRecordStore
         }
     }
 
+    internal async Task<JsonColdStoreStartupValidationResult> VerifyAllRecordsAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var entitiesDirectory = JsonColdStorePathValidator.GetSafeChildPath(
+            _options.DatabaseDirectory,
+            "entities");
+
+        if (!Directory.Exists(entitiesDirectory))
+            return new JsonColdStoreStartupValidationResult(0);
+
+        var verificationOptions = _options.Integrity.VerifyOnStartup
+            ? _options with
+            {
+                Integrity = _options.Integrity with
+                {
+                    VerifyOnRead = true,
+                },
+            }
+            : _options;
+        var verifiedRecords = 0;
+
+        foreach (var recordPath in Directory.EnumerateFiles(
+                     entitiesDirectory,
+                     "*.jcs",
+                     SearchOption.AllDirectories).Order(StringComparer.Ordinal))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var payload = await File.ReadAllBytesAsync(recordPath, cancellationToken);
+            try
+            {
+                _ = JsonColdStorePayloadCodec.Decode(payload, verificationOptions);
+            }
+            catch (InvalidDataException)
+            {
+                QuarantineRecordPath(recordPath);
+                throw;
+            }
+
+            verifiedRecords++;
+        }
+
+        return new JsonColdStoreStartupValidationResult(verifiedRecords);
+    }
+
     internal async Task<JsonColdStoreRecoveryResult> RecoverPendingManifestsAsync(
         CancellationToken cancellationToken = default)
     {
@@ -417,6 +461,8 @@ internal sealed record JsonColdStoreWriteManifest(
 }
 
 internal sealed record JsonColdStoreRecoveryResult(int CompletedManifests, int FailedManifests);
+
+internal sealed record JsonColdStoreStartupValidationResult(int VerifiedRecords);
 
 internal enum JsonColdStoreManifestOperation
 {

@@ -9,12 +9,14 @@ internal sealed class JsonColdStoreDatabaseSession : IAsyncDisposable, IDisposab
         JsonColdStoreOptions options,
         JsonColdStoreStoreMetadata metadata,
         JsonColdStoreRecoveryResult recoveryResult,
+        JsonColdStoreStartupValidationResult startupValidationResult,
         JsonColdStoreRecordStore records,
         JsonColdStoreDatabaseLock? writerLock)
     {
         Options = options;
         Metadata = metadata;
         RecoveryResult = recoveryResult;
+        StartupValidationResult = startupValidationResult;
         Records = records;
         _writerLock = writerLock;
     }
@@ -24,6 +26,8 @@ internal sealed class JsonColdStoreDatabaseSession : IAsyncDisposable, IDisposab
     internal JsonColdStoreStoreMetadata Metadata { get; }
 
     internal JsonColdStoreRecoveryResult RecoveryResult { get; }
+
+    internal JsonColdStoreStartupValidationResult StartupValidationResult { get; }
 
     internal JsonColdStoreRecordStore Records { get; }
 
@@ -48,8 +52,17 @@ internal sealed class JsonColdStoreDatabaseSession : IAsyncDisposable, IDisposab
             var recoveryResult = acquireWriterLock
                 ? await records.RecoverPendingManifestsAsync(cancellationToken)
                 : new JsonColdStoreRecoveryResult(0, 0);
+            var startupValidationResult = options.StartupMode == JsonColdStoreStartupMode.FullHydration
+                ? await records.VerifyAllRecordsAsync(cancellationToken)
+                : new JsonColdStoreStartupValidationResult(0);
 
-            return new JsonColdStoreDatabaseSession(options, metadata, recoveryResult, records, writerLock);
+            return new JsonColdStoreDatabaseSession(
+                options,
+                metadata,
+                recoveryResult,
+                startupValidationResult,
+                records,
+                writerLock);
         }
         catch
         {

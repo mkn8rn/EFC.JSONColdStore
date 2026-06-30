@@ -104,7 +104,7 @@ public sealed record JsonColdStoreIntegrityOptions
     /// <summary>Whether checksum manifests are maintained.</summary>
     public bool EnableChecksums { get; init; } = true;
 
-    /// <summary>Whether checksums are verified when a store opens.</summary>
+    /// <summary>Whether checksums are verified during startup hydration.</summary>
     public bool VerifyOnStartup { get; init; } = true;
 
     /// <summary>Whether checksums are verified on individual reads.</summary>

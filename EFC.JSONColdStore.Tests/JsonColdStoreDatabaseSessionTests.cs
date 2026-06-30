@@ -74,6 +74,72 @@ public sealed class JsonColdStoreDatabaseSessionTests
     }
 
     [Fact]
+    public async Task OpenAsyncMetadataOnlyDoesNotHydrateRecords()
+    {
+        var root = NewTempDirectory();
+        var options = new JsonColdStoreOptionsBuilder(root)
+            .UseCompression(JsonColdStoreCompression.None)
+            .UseChecksums(verifyOnStartup: true, verifyOnRead: true)
+            .UseFsyncOnWrite(false)
+            .Build();
+        var store = new JsonColdStoreRecordStore(options);
+        await store.WriteRecordAsync("Entity", "1", "payload"u8.ToArray());
+        await CorruptRecordAsync(root, "Entity", "1");
+
+        await using var session = await JsonColdStoreDatabaseSession.OpenAsync(options);
+
+        Assert.Equal(0, session.StartupValidationResult.VerifiedRecords);
+        Assert.True(session.Records.RecordExists("Entity", "1"));
+    }
+
+    [Fact]
+    public async Task OpenAsyncFullHydrationVerifiesStoredRecords()
+    {
+        var root = NewTempDirectory();
+        var writeOptions = new JsonColdStoreOptionsBuilder(root)
+            .UseCompression(JsonColdStoreCompression.None)
+            .UseFsyncOnWrite(false)
+            .Build();
+        var store = new JsonColdStoreRecordStore(writeOptions);
+        await store.WriteRecordAsync("Entity", "1", "first"u8.ToArray());
+        await store.WriteRecordAsync("Entity", "2", "second"u8.ToArray());
+        var readOptions = new JsonColdStoreOptionsBuilder(root)
+            .UseCompression(JsonColdStoreCompression.None)
+            .UseStartupMode(JsonColdStoreStartupMode.FullHydration)
+            .UseFsyncOnWrite(false)
+            .Build();
+
+        await using var session = await JsonColdStoreDatabaseSession.OpenAsync(readOptions);
+
+        Assert.Equal(2, session.StartupValidationResult.VerifiedRecords);
+    }
+
+    [Fact]
+    public async Task OpenAsyncFullHydrationQuarantinesChecksumCorruptRecord()
+    {
+        var root = NewTempDirectory();
+        var writeOptions = new JsonColdStoreOptionsBuilder(root)
+            .UseCompression(JsonColdStoreCompression.None)
+            .UseFsyncOnWrite(false)
+            .Build();
+        var store = new JsonColdStoreRecordStore(writeOptions);
+        await store.WriteRecordAsync("Entity", "1", "payload"u8.ToArray());
+        await CorruptRecordAsync(root, "Entity", "1");
+        var readOptions = new JsonColdStoreOptionsBuilder(root)
+            .UseCompression(JsonColdStoreCompression.None)
+            .UseStartupMode(JsonColdStoreStartupMode.FullHydration)
+            .UseChecksums(verifyOnStartup: true, verifyOnRead: false)
+            .UseFsyncOnWrite(false)
+            .Build();
+
+        await Assert.ThrowsAsync<InvalidDataException>(
+            () => JsonColdStoreDatabaseSession.OpenAsync(readOptions));
+
+        Assert.False(store.RecordExists("Entity", "1"));
+        Assert.Single(Directory.GetFiles(Path.Combine(root, "_quarantine", "records"), "*.jcs"));
+    }
+
+    [Fact]
     public async Task OpenAsyncRejectsConcurrentWriters()
     {
         var root = NewTempDirectory();
@@ -136,6 +202,16 @@ public sealed class JsonColdStoreDatabaseSessionTests
 
     private static string PendingManifestPath(string root, Guid manifestId) =>
         Path.Combine(root, "_transactions", "pending", manifestId.ToString("N") + ".json");
+
+    private static async Task CorruptRecordAsync(string root, string entityName, string recordId)
+    {
+        var recordPath = JsonColdStorePathValidator.GetSafeChildPath(
+            root,
+            [.. JsonColdStoreRecordStore.GetRecordPathSegments(entityName, recordId)]);
+        var bytes = await File.ReadAllBytesAsync(recordPath);
+        bytes[^1] ^= 0x7F;
+        await File.WriteAllBytesAsync(recordPath, bytes);
+    }
 
     private static string NewTempDirectory()
     {
