@@ -41,6 +41,35 @@ public sealed class JsonColdStorePathValidatorTests
     }
 
     [Fact]
+    public void GetSafeChildPathRejectsTraversalInsideDatabaseDirectory()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "jsoncoldstore-tests", "root");
+
+        Assert.Throws<UnauthorizedAccessException>(
+            () => JsonColdStorePathValidator.GetSafeChildPath(root, "entities", "..", "_store.json"));
+    }
+
+    [Fact]
+    public void GetSafeChildPathRejectsRootedChildSegment()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "jsoncoldstore-tests", "root");
+        var rootedSegment = Path.Combine(root, "other");
+
+        Assert.Throws<UnauthorizedAccessException>(
+            () => JsonColdStorePathValidator.GetSafeChildPath(root, rootedSegment));
+    }
+
+    [Fact]
+    public void GetSafeChildPathRejectsMultiPartChildSegment()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "jsoncoldstore-tests", "root");
+        var childSegment = Path.Combine("Entity", "record.json");
+
+        Assert.Throws<UnauthorizedAccessException>(
+            () => JsonColdStorePathValidator.GetSafeChildPath(root, childSegment));
+    }
+
+    [Fact]
     public void GetSafeChildPathAllowsNestedFile()
     {
         var root = Path.Combine(Path.GetTempPath(), "jsoncoldstore-tests", "root");

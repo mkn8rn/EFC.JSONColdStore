@@ -43,8 +43,7 @@ public static class JsonColdStorePathValidator
         var candidate = root;
         foreach (var segment in pathSegments)
         {
-            if (string.IsNullOrWhiteSpace(segment))
-                throw new ArgumentException("Path segments cannot be empty.", nameof(pathSegments));
+            ValidateChildPathSegment(segment, nameof(pathSegments));
 
             candidate = Path.Combine(candidate, segment);
         }
@@ -62,6 +61,21 @@ public static class JsonColdStorePathValidator
         }
 
         return fullCandidate;
+    }
+
+    private static void ValidateChildPathSegment(string segment, string parameterName)
+    {
+        if (string.IsNullOrWhiteSpace(segment))
+            throw new ArgumentException("Path segments cannot be empty.", parameterName);
+
+        if (segment is "." or ".."
+            || Path.IsPathRooted(segment)
+            || segment.Contains(Path.DirectorySeparatorChar)
+            || segment.Contains(Path.AltDirectorySeparatorChar))
+        {
+            throw new UnauthorizedAccessException(
+                "Path segments must be relative child names without traversal or directory separators.");
+        }
     }
 
     private static string TrimDirectorySeparators(string path)
