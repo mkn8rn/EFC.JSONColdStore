@@ -16,6 +16,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\EFC.JSONColdStore\EFC.JSONColdStore.csproj" />
+    <ProjectReference Include="..\EFC.JSONColdStore\EFC.JSONColdStore.csproj" />
   </ItemGroup>
 </Project>
