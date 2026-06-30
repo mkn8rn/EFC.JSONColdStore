@@ -686,6 +686,77 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
     }
 
     [Fact]
+    public async Task GetJsonColdStoreDiagnosticsAsyncReportsRedactedStoreCounts()
+    {
+        var directory = TestDirectory("diagnostics-counts-" + Guid.NewGuid().ToString("N"));
+        using var key = JsonColdStoreEncryptionKey.FromBytes(Enumerable.Range(0, 32).Select(value => (byte)value).ToArray());
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(
+            directory,
+            store => store
+                .UseFsyncOnWrite(false)
+                .UseEncryption(new JsonColdStoreEncryptionOptions
+                {
+                    Key = key,
+                    KeyId = "diagnostic-key-id",
+                })
+                .UseEventLog(enabled: true, TimeSpan.FromDays(7))
+                .UseSnapshots(enabled: true, TimeSpan.FromHours(1), retentionCount: 2));
+        var id = Guid.Parse("53000000-0000-0000-0000-000000000001");
+        using var context = new WritableDbContext(builder.Options);
+        context.Entities.Add(new WritableEntity
+        {
+            Id = id,
+            Value = "diagnostic payload",
+            Score = 53,
+        });
+        context.SaveChanges();
+        _ = await context.Database.CreateJsonColdStoreSnapshotAsync();
+
+        var diagnostics = await context.Database.GetJsonColdStoreDiagnosticsAsync();
+        var serialized = JsonSerializer.Serialize(diagnostics);
+
+        Assert.True(diagnostics.HasStoreMetadata);
+        Assert.Equal(1, diagnostics.RecordFileCount);
+        Assert.Equal(2, diagnostics.IndexFileCount);
+        Assert.Equal(1, diagnostics.EventLogFileCount);
+        Assert.Equal(1, diagnostics.SnapshotCount);
+        Assert.Equal(1, diagnostics.MappedEntityCount);
+        Assert.Equal(2, diagnostics.Entities[0].DeclaredIndexCount);
+        Assert.Equal(1, diagnostics.Entities[0].RecordFileCount);
+        Assert.Equal(2, diagnostics.Entities[0].IndexFileCount);
+        Assert.True(diagnostics.EncryptionEnabled);
+        Assert.DoesNotContain(directory, serialized, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("diagnostic-key-id", serialized, StringComparison.Ordinal);
+        Assert.DoesNotContain(id.ToString(), serialized, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("diagnostic payload", serialized, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task GetJsonColdStoreDiagnosticsAsyncCountsLegacyRecordsWithoutCreatingMetadata()
+    {
+        var directory = TestDirectory("diagnostics-legacy-" + Guid.NewGuid().ToString("N"));
+        await WriteLegacyEntityAsync(directory, new WritableEntity
+        {
+            Id = Guid.Parse("53000000-0000-0000-0000-000000000002"),
+            Value = "legacy diagnostics",
+            Score = 54,
+        });
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+
+        using var context = new WritableDbContext(builder.Options);
+        var diagnostics = await context.Database.GetJsonColdStoreDiagnosticsAsync();
+
+        Assert.False(diagnostics.HasStoreMetadata);
+        Assert.Equal(0, diagnostics.RecordFileCount);
+        Assert.Equal(1, diagnostics.LegacyRecordFileCount);
+        Assert.Equal(1, diagnostics.Entities[0].LegacyRecordFileCount);
+        Assert.False(File.Exists(Path.Combine(directory, "_store.json")));
+        Assert.False(File.Exists(Path.Combine(directory, "_model.json")));
+    }
+
+    [Fact]
     public async Task ReadJsonColdStoreAsyncReadsLegacyPlainEntityWithoutCreatingMetadata()
     {
         var directory = TestDirectory("legacy-plain-" + Guid.NewGuid().ToString("N"));

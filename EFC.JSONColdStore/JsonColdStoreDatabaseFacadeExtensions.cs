@@ -237,4 +237,24 @@ public static class JsonColdStoreDatabaseFacadeExtensions
         var snapshots = new JsonColdStoreSnapshotStore(session.Options);
         return await snapshots.CreateSnapshotAsync(cancellationToken);
     }
+
+    /// <summary>
+    /// Reads redacted JSONColdStore operational diagnostics without mutating storage.
+    /// </summary>
+    public static Task<JsonColdStoreDiagnosticsResult> GetJsonColdStoreDiagnosticsAsync(
+        this DatabaseFacade database,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(database);
+
+        var context = database.GetService<ICurrentDbContext>().Context;
+        var storeOptions = database.GetService<IDbContextOptions>()
+            .FindExtension<JsonColdStoreOptionsExtension>()?.Options
+            ?? throw new InvalidOperationException("JSONColdStore options are not configured.");
+        var diagnostics = new JsonColdStoreDiagnosticsStore(
+            storeOptions,
+            JsonColdStoreModelDescriptor.Create(context.Model));
+
+        return diagnostics.ReadAsync(cancellationToken);
+    }
 }
