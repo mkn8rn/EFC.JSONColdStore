@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using EFC.JSONColdStore;
 using EFC.JSONColdStore.Infrastructure;
 using EFC.JSONColdStore.Storage;
@@ -903,6 +904,7 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
 
         Assert.Equal(2, result.VerifiedRecords);
         Assert.Equal(0, result.VerifiedLegacyRecords);
+        Assert.Equal(2, result.VerifiedIndexes);
     }
 
     [Fact]
@@ -923,6 +925,7 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
 
         Assert.Equal(0, result.VerifiedRecords);
         Assert.Equal(1, result.VerifiedLegacyRecords);
+        Assert.Equal(0, result.VerifiedIndexes);
         Assert.False(File.Exists(Path.Combine(directory, "_store.json")));
         Assert.False(File.Exists(Path.Combine(directory, "_model.json")));
     }
@@ -953,6 +956,7 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
 
         Assert.Equal(0, result.VerifiedRecords);
         Assert.Equal(1, result.VerifiedLegacyRecords);
+        Assert.Equal(0, result.VerifiedIndexes);
     }
 
     [Fact]
@@ -976,6 +980,51 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
 
         Assert.True(File.Exists(recordPath));
         Assert.False(Directory.Exists(Path.Combine(directory, "_quarantine", "records")));
+    }
+
+    [Fact]
+    public async Task VerifyJsonColdStoreAsyncRejectsMissingDeclaredIndex()
+    {
+        var directory = TestDirectory("verify-missing-index-" + Guid.NewGuid().ToString("N"));
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+        using var context = new WritableDbContext(builder.Options);
+        context.Entities.Add(new WritableEntity
+        {
+            Id = Guid.Parse("51000000-0000-0000-0000-000000000008"),
+            Value = "missing-index",
+        });
+        context.SaveChanges();
+        File.Delete(IndexPath(directory, "Value"));
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => context.Database.VerifyJsonColdStoreAsync());
+
+        Assert.Contains("index", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Value", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task VerifyJsonColdStoreAsyncRejectsIndexReferenceToMissingRecord()
+    {
+        var directory = TestDirectory("verify-stale-index-" + Guid.NewGuid().ToString("N"));
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+        var missingRecordId = Guid.Parse("51000000-0000-0000-0000-000000000009").ToString();
+        using var context = new WritableDbContext(builder.Options);
+        context.Entities.Add(new WritableEntity
+        {
+            Id = Guid.Parse("51000000-0000-0000-0000-000000000010"),
+            Value = "stale-index",
+        });
+        context.SaveChanges();
+        await AppendRecordIdToFirstIndexBucketAsync(IndexPath(directory, "Value"), missingRecordId);
+
+        var exception = await Assert.ThrowsAsync<InvalidDataException>(
+            () => context.Database.VerifyJsonColdStoreAsync());
+
+        Assert.Contains("missing record", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(missingRecordId, exception.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -2223,6 +2272,21 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
         var bytes = await File.ReadAllBytesAsync(recordPath);
         bytes[^1] ^= 0x7F;
         await File.WriteAllBytesAsync(recordPath, bytes);
+    }
+
+    private static async Task AppendRecordIdToFirstIndexBucketAsync(string indexPath, string recordId)
+    {
+        var root = JsonNode.Parse(await File.ReadAllTextAsync(indexPath))?.AsObject()
+            ?? throw new InvalidDataException("The index document could not be parsed.");
+        var buckets = root["buckets"]?.AsObject()
+            ?? throw new InvalidDataException("The index document does not contain buckets.");
+        var firstBucket = buckets.FirstOrDefault().Value?.AsArray()
+            ?? throw new InvalidDataException("The index document does not contain an index bucket.");
+
+        firstBucket.Add(recordId);
+        await File.WriteAllTextAsync(
+            indexPath,
+            root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
     }
 
     private static byte[] EncryptLegacyPayload(ReadOnlySpan<byte> plaintext, JsonColdStoreEncryptionKey key)

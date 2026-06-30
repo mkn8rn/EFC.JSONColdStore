@@ -183,7 +183,10 @@ public static class JsonColdStoreDatabaseFacadeExtensions
         var result = await entityStore.VerifyEntitiesAsync(cancellationToken);
         return new JsonColdStoreVerificationResult(
             result.VerifiedRecords,
-            result.VerifiedLegacyRecords);
+            result.VerifiedLegacyRecords)
+        {
+            VerifiedIndexes = result.VerifiedIndexes,
+        };
     }
 
     /// <summary>

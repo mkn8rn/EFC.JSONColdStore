@@ -388,6 +388,7 @@ internal sealed class JsonColdStoreEntityRecordStore
         await EnsureModelCatalogAsync(createIfMissing: false, cancellationToken);
         var verifiedRecords = 0;
         var verifiedLegacyRecords = 0;
+        var verifiedIndexes = 0;
 
         foreach (var descriptor in _modelDescriptor.Entities)
         {
@@ -408,11 +409,62 @@ internal sealed class JsonColdStoreEntityRecordStore
                 VerifyPayload(legacyRecord.Payload, descriptor.ClrType, descriptor.EntityName);
                 verifiedLegacyRecords++;
             }
+
+            verifiedIndexes += await VerifyIndexesAsync(descriptor, cancellationToken);
         }
 
         return new JsonColdStoreEntityVerificationResult(
             verifiedRecords,
-            verifiedLegacyRecords);
+            verifiedLegacyRecords,
+            verifiedIndexes);
+    }
+
+    private async Task<int> VerifyIndexesAsync(
+        JsonColdStoreEntityDescriptor descriptor,
+        CancellationToken cancellationToken)
+    {
+        var verifiedIndexes = 0;
+
+        foreach (var index in descriptor.Indexes)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (!_indexStore.DocumentExists(descriptor.EntityName, index.StorageName))
+            {
+                if (_session.Records.EntityHasRecords(descriptor.EntityName))
+                {
+                    throw new InvalidOperationException(
+                        $"The JSONColdStore index '{index.StorageName}' for entity '{descriptor.EntityName}' is missing. "
+                        + "Rebuild JSONColdStore indexes before verification can complete.");
+                }
+
+                continue;
+            }
+
+            var recordIds = await _indexStore.ReadAllRecordIdsAsync(
+                descriptor.EntityName,
+                index.StorageName,
+                cancellationToken);
+
+            foreach (var recordId in recordIds)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (_session.Records.RecordExists(descriptor.EntityName, recordId)
+                    || _session.LegacyRecords.RecordExists(descriptor, recordId))
+                {
+                    continue;
+                }
+
+                throw new InvalidDataException(
+                    $"The JSONColdStore index '{index.StorageName}' for entity '{descriptor.EntityName}' "
+                    + $"references missing record '{recordId}'.");
+            }
+
+            verifiedIndexes++;
+        }
+
+        return verifiedIndexes;
     }
 
     private static void VerifyPayload(
@@ -720,4 +772,5 @@ internal sealed class JsonColdStoreEntityRecordStore
 
 internal sealed record JsonColdStoreEntityVerificationResult(
     int VerifiedRecords,
-    int VerifiedLegacyRecords);
+    int VerifiedLegacyRecords,
+    int VerifiedIndexes);
