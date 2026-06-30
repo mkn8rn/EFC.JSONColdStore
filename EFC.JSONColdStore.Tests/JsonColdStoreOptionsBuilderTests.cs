@@ -13,7 +13,7 @@ public sealed class JsonColdStoreOptionsBuilderTests
         Assert.Equal(JsonColdStoreStartupMode.MetadataOnly, options.StartupMode);
         Assert.Equal(JsonColdStoreDurability.ManifestedAtomicWrites, options.Durability);
         Assert.True(options.FsyncOnWrite);
-        Assert.True(options.AsyncFlush.Enabled);
+        Assert.False(options.AsyncFlush.Enabled);
         Assert.Equal(256, options.AsyncFlush.QueueCapacity);
         Assert.True(options.Integrity.EnableChecksums);
         Assert.True(options.Integrity.VerifyOnStartup);
@@ -37,8 +37,6 @@ public sealed class JsonColdStoreOptionsBuilderTests
             })
             .UseStartupMode(JsonColdStoreStartupMode.FullHydration)
             .UseFsyncOnWrite(false)
-            .UseAsyncFlush(queueCapacity: 32)
-            .UseFlushRetry(maxRetries: 5, baseDelay: TimeSpan.FromMilliseconds(25))
             .UseTransactionReplay(maxRetries: 7)
             .UseReadRetry(maxRetries: 4, baseDelay: TimeSpan.FromMilliseconds(10))
             .UseChecksums(verifyOnStartup: false, verifyOnRead: true)
@@ -54,9 +52,7 @@ public sealed class JsonColdStoreOptionsBuilderTests
         Assert.True(options.Encryption?.RequireEncryptedStore);
         Assert.Equal(JsonColdStoreStartupMode.FullHydration, options.StartupMode);
         Assert.False(options.FsyncOnWrite);
-        Assert.Equal(32, options.AsyncFlush.QueueCapacity);
-        Assert.Equal(5, options.FlushRetry.MaxRetries);
-        Assert.Equal(TimeSpan.FromMilliseconds(25), options.FlushRetry.BaseDelay);
+        Assert.False(options.AsyncFlush.Enabled);
         Assert.Equal(7, options.TransactionReplay.MaxRetries);
         Assert.Equal(4, options.ReadRetry.MaxRetries);
         Assert.Equal(TimeSpan.FromMilliseconds(10), options.ReadRetry.BaseDelay);
@@ -70,11 +66,13 @@ public sealed class JsonColdStoreOptionsBuilderTests
     }
 
     [Fact]
-    public void UseAsyncFlushRejectsInvalidCapacity()
+    public void AsyncFlushPoliciesThrowUntilImplemented()
     {
         var builder = new JsonColdStoreOptionsBuilder(TestDirectory("store"));
 
-        Assert.Throws<ArgumentOutOfRangeException>(() => builder.UseAsyncFlush(0));
+        Assert.Throws<NotSupportedException>(() => builder.UseAsyncFlush());
+        Assert.Throws<NotSupportedException>(
+            () => builder.UseFlushRetry(1, TimeSpan.FromMilliseconds(1)));
     }
 
     [Fact]
@@ -82,8 +80,6 @@ public sealed class JsonColdStoreOptionsBuilderTests
     {
         var builder = new JsonColdStoreOptionsBuilder(TestDirectory("store"));
 
-        Assert.Throws<ArgumentOutOfRangeException>(() => builder.UseFlushRetry(-1, TimeSpan.Zero));
-        Assert.Throws<ArgumentOutOfRangeException>(() => builder.UseFlushRetry(1, TimeSpan.FromMilliseconds(-1)));
         Assert.Throws<ArgumentOutOfRangeException>(() => builder.UseTransactionReplay(-1));
         Assert.Throws<ArgumentOutOfRangeException>(() => builder.UseReadRetry(-1, TimeSpan.Zero));
         Assert.Throws<ArgumentOutOfRangeException>(() => builder.UseReadRetry(1, TimeSpan.FromMilliseconds(-1)));

@@ -76,18 +76,11 @@ public sealed class JsonColdStoreOptionsBuilder
         return this;
     }
 
-    /// <summary>Enables background flush with a bounded queue capacity.</summary>
+    /// <summary>Rejects background flush because saves publish synchronously in this provider version.</summary>
     public JsonColdStoreOptionsBuilder UseAsyncFlush(int queueCapacity = 256)
     {
-        if (queueCapacity <= 0)
-            throw new ArgumentOutOfRangeException(nameof(queueCapacity), "Queue capacity must be positive.");
-
-        _asyncFlush = new JsonColdStoreAsyncFlushOptions
-        {
-            Enabled = true,
-            QueueCapacity = queueCapacity,
-        };
-        return this;
+        throw new NotSupportedException(
+            "Background async flush is not implemented in this JSONColdStore provider version.");
     }
 
     /// <summary>Disables background flush so saves publish synchronously.</summary>
@@ -97,11 +90,11 @@ public sealed class JsonColdStoreOptionsBuilder
         return this;
     }
 
-    /// <summary>Sets retry behavior for background flush attempts.</summary>
+    /// <summary>Rejects background flush retry because background flush is not available in this provider version.</summary>
     public JsonColdStoreOptionsBuilder UseFlushRetry(int maxRetries, TimeSpan baseDelay)
     {
-        _flushRetry = CreateRetryOptions(maxRetries, baseDelay, nameof(maxRetries));
-        return this;
+        throw new NotSupportedException(
+            "Background async flush retry is not implemented in this JSONColdStore provider version.");
     }
 
     /// <summary>Sets the maximum retry count for transaction replay.</summary>

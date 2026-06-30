@@ -23,10 +23,10 @@ public sealed record JsonColdStoreOptions
     /// <summary>Whether writes should flush file data before publication.</summary>
     public bool FsyncOnWrite { get; init; } = true;
 
-    /// <summary>Background flush and queue back-pressure settings.</summary>
+    /// <summary>Reserved background flush and queue back-pressure settings.</summary>
     public JsonColdStoreAsyncFlushOptions AsyncFlush { get; init; } = new();
 
-    /// <summary>Retry behavior for background flush attempts.</summary>
+    /// <summary>Reserved retry behavior for background flush attempts.</summary>
     public JsonColdStoreRetryOptions FlushRetry { get; init; } = JsonColdStoreRetryOptions.DefaultFlushRetry;
 
     /// <summary>Retry behavior for replaying pending transaction manifests.</summary>
@@ -71,7 +71,7 @@ public sealed record JsonColdStoreEncryptionOptions
 public sealed record JsonColdStoreAsyncFlushOptions
 {
     /// <summary>Whether saves may publish through a background flush queue.</summary>
-    public bool Enabled { get; init; } = true;
+    public bool Enabled { get; init; }
 
     /// <summary>Maximum queued flush intents before callers apply back-pressure.</summary>
     public int QueueCapacity { get; init; } = 256;
