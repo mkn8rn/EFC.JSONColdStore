@@ -171,7 +171,9 @@ internal sealed class JsonColdStoreRecordStore
             JsonColdStoreWriteManifest? manifest;
             try
             {
-                var manifestBytes = await File.ReadAllBytesAsync(manifestPath, cancellationToken);
+                var manifestBytes = await ExecuteReplayAsync(
+                    token => File.ReadAllBytesAsync(manifestPath, token),
+                    cancellationToken);
                 manifest = DecodeManifest(manifestBytes);
             }
             catch (CryptographicException)
@@ -184,14 +186,14 @@ internal sealed class JsonColdStoreRecordStore
             }
             catch
             {
-                MoveManifestToFailed(manifestPath);
+                await MoveManifestToFailedAsync(manifestPath, cancellationToken);
                 failed++;
                 continue;
             }
 
             if (manifest is null)
             {
-                MoveManifestToFailed(manifestPath);
+                await MoveManifestToFailedAsync(manifestPath, cancellationToken);
                 failed++;
                 continue;
             }
@@ -203,25 +205,37 @@ internal sealed class JsonColdStoreRecordStore
             switch (manifest.Operation)
             {
                 case JsonColdStoreManifestOperation.Write when File.Exists(targetPath):
-                    File.Delete(manifestPath);
+                    await ExecuteReplayAsync(
+                        _ =>
+                        {
+                            File.Delete(manifestPath);
+                            return Task.CompletedTask;
+                        },
+                        cancellationToken);
                     completed++;
                     break;
 
                 case JsonColdStoreManifestOperation.Write:
-                    MoveManifestToFailed(manifestPath);
+                    await MoveManifestToFailedAsync(manifestPath, cancellationToken);
                     failed++;
                     break;
 
                 case JsonColdStoreManifestOperation.Delete:
-                    if (File.Exists(targetPath))
-                        File.Delete(targetPath);
+                    await ExecuteReplayAsync(
+                        _ =>
+                        {
+                            if (File.Exists(targetPath))
+                                File.Delete(targetPath);
 
-                    File.Delete(manifestPath);
+                            File.Delete(manifestPath);
+                            return Task.CompletedTask;
+                        },
+                        cancellationToken);
                     completed++;
                     break;
 
                 default:
-                    MoveManifestToFailed(manifestPath);
+                    await MoveManifestToFailedAsync(manifestPath, cancellationToken);
                     failed++;
                     break;
             }
@@ -249,6 +263,27 @@ internal sealed class JsonColdStoreRecordStore
             ManifestJsonOptions);
     }
 
+    private Task ExecuteReplayAsync(
+        Func<CancellationToken, Task> operation,
+        CancellationToken cancellationToken) =>
+        JsonColdStoreRetryPolicy.ExecuteAsync(
+            _options.TransactionReplay,
+            operation,
+            IsTransientReplayException,
+            cancellationToken);
+
+    private Task<TResult> ExecuteReplayAsync<TResult>(
+        Func<CancellationToken, Task<TResult>> operation,
+        CancellationToken cancellationToken) =>
+        JsonColdStoreRetryPolicy.ExecuteAsync(
+            _options.TransactionReplay,
+            operation,
+            IsTransientReplayException,
+            cancellationToken);
+
+    private static bool IsTransientReplayException(Exception exception) =>
+        exception is IOException or UnauthorizedAccessException;
+
     internal static string[] GetRecordPathSegments(string entityName, string recordId) =>
     [
         "entities",
@@ -272,6 +307,17 @@ internal sealed class JsonColdStoreRecordStore
 
         if (File.Exists(path))
             File.Delete(path);
+    }
+
+    private Task MoveManifestToFailedAsync(string manifestPath, CancellationToken cancellationToken)
+    {
+        return ExecuteReplayAsync(
+            _ =>
+            {
+                MoveManifestToFailed(manifestPath);
+                return Task.CompletedTask;
+            },
+            cancellationToken);
     }
 
     private void MoveManifestToFailed(string manifestPath)
