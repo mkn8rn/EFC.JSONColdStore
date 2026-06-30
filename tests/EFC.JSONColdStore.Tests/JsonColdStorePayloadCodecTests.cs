@@ -99,6 +99,55 @@ public sealed class JsonColdStorePayloadCodecTests
             () => JsonColdStorePayloadCodec.Decode(encoded, encryptedOptions));
     }
 
+    [Fact]
+    public void ChecksumVerificationRejectsCorruptedPlainPayload()
+    {
+        var options = new JsonColdStoreOptionsBuilder(TestDirectory("checksum-corrupt"))
+            .UseCompression(JsonColdStoreCompression.None)
+            .UseChecksums(verifyOnStartup: true, verifyOnRead: true)
+            .Build();
+        var encoded = JsonColdStorePayloadCodec.Encode("plain payload"u8, options);
+
+        encoded[^1] ^= 0x7F;
+
+        var exception = Assert.Throws<InvalidDataException>(
+            () => JsonColdStorePayloadCodec.Decode(encoded, options));
+        Assert.Contains("checksum", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void DisabledChecksumsDoNotRequireChecksumMetadata()
+    {
+        var options = new JsonColdStoreOptionsBuilder(TestDirectory("checksum-disabled"))
+            .UseCompression(JsonColdStoreCompression.None)
+            .DisableChecksums()
+            .Build();
+        var payload = "payload without checksum"u8.ToArray();
+
+        var encoded = JsonColdStorePayloadCodec.Encode(payload, options);
+        var decoded = JsonColdStorePayloadCodec.Decode(encoded, options);
+
+        Assert.Equal(payload, decoded);
+    }
+
+    [Fact]
+    public void VerifyOnReadRequiresChecksumMetadata()
+    {
+        var writeOptions = new JsonColdStoreOptionsBuilder(TestDirectory("checksum-required"))
+            .UseCompression(JsonColdStoreCompression.None)
+            .DisableChecksums()
+            .Build();
+        var readOptions = new JsonColdStoreOptionsBuilder(TestDirectory("checksum-required"))
+            .UseCompression(JsonColdStoreCompression.None)
+            .UseChecksums(verifyOnStartup: true, verifyOnRead: true)
+            .Build();
+
+        var encoded = JsonColdStorePayloadCodec.Encode("payload"u8, writeOptions);
+
+        Assert.Throws<InvalidDataException>(
+            () => JsonColdStorePayloadCodec.Decode(encoded, readOptions));
+    }
+
     private static string TestDirectory(string name) =>
         Path.Combine(Path.GetTempPath(), "jsoncoldstore-codec-tests", name);
 }

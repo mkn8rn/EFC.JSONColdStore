@@ -10,13 +10,15 @@ internal static class JsonColdStorePayloadCodec
     private const byte Version = 1;
     private const byte CompressedFlag = 1;
     private const byte EncryptedFlag = 2;
+    private const byte ChecksumFlag = 4;
     private const byte CompressionNone = 0;
     private const byte CompressionBrotli = 1;
     private const byte EncryptionNone = 0;
     private const byte EncryptionAes256Gcm = 1;
     private const int NonceLength = 12;
     private const int TagLength = 16;
-    private const int HeaderLength = 18;
+    private const int ChecksumLength = 32;
+    private const int HeaderLength = 20;
     private const int AutoCompressionThresholdBytes = 4096;
 
     private static ReadOnlySpan<byte> Magic => "JCS1"u8;
@@ -56,7 +58,14 @@ internal static class JsonColdStorePayloadCodec
             encryption = EncryptionAes256Gcm;
         }
 
-        return WriteEnvelope(flags, compression, encryption, keyIdBytes, nonce, tag, payload);
+        var checksum = Array.Empty<byte>();
+        if (options.Integrity.EnableChecksums)
+        {
+            checksum = SHA256.HashData(payload);
+            flags |= ChecksumFlag;
+        }
+
+        return WriteEnvelope(flags, compression, encryption, keyIdBytes, nonce, tag, checksum, payload);
     }
 
     internal static byte[] Decode(ReadOnlySpan<byte> encoded, JsonColdStoreOptions options)
@@ -71,6 +80,16 @@ internal static class JsonColdStorePayloadCodec
             throw new InvalidOperationException("The store requires encrypted payloads.");
 
         var payload = envelope.Payload.ToArray();
+        if (options.Integrity.VerifyOnRead)
+        {
+            if (!envelope.HasChecksum)
+                throw new InvalidDataException("The payload does not contain a checksum.");
+
+            var actualChecksum = SHA256.HashData(payload);
+            if (!CryptographicOperations.FixedTimeEquals(actualChecksum, envelope.Checksum.Span))
+                throw new InvalidDataException("The payload checksum is invalid.");
+        }
+
         if (envelope.Encrypted)
         {
             if (!string.IsNullOrEmpty(envelope.KeyId)
@@ -165,12 +184,19 @@ internal static class JsonColdStorePayloadCodec
         ReadOnlySpan<byte> keyId,
         ReadOnlySpan<byte> nonce,
         ReadOnlySpan<byte> tag,
+        ReadOnlySpan<byte> checksum,
         ReadOnlySpan<byte> payload)
     {
-        if (keyId.Length > ushort.MaxValue || nonce.Length > ushort.MaxValue || tag.Length > ushort.MaxValue)
+        if (keyId.Length > ushort.MaxValue
+            || nonce.Length > ushort.MaxValue
+            || tag.Length > ushort.MaxValue
+            || checksum.Length > ushort.MaxValue)
+        {
             throw new InvalidOperationException("Envelope metadata is too large.");
+        }
 
-        var output = new byte[HeaderLength + keyId.Length + nonce.Length + tag.Length + payload.Length];
+        var output = new byte[
+            HeaderLength + keyId.Length + nonce.Length + tag.Length + checksum.Length + payload.Length];
         Magic.CopyTo(output);
         output[4] = Version;
         output[5] = flags;
@@ -179,7 +205,8 @@ internal static class JsonColdStorePayloadCodec
         BinaryPrimitives.WriteUInt16LittleEndian(output.AsSpan(8, 2), checked((ushort)keyId.Length));
         BinaryPrimitives.WriteUInt16LittleEndian(output.AsSpan(10, 2), checked((ushort)nonce.Length));
         BinaryPrimitives.WriteUInt16LittleEndian(output.AsSpan(12, 2), checked((ushort)tag.Length));
-        BinaryPrimitives.WriteInt32LittleEndian(output.AsSpan(14, 4), payload.Length);
+        BinaryPrimitives.WriteUInt16LittleEndian(output.AsSpan(14, 2), checked((ushort)checksum.Length));
+        BinaryPrimitives.WriteInt32LittleEndian(output.AsSpan(16, 4), payload.Length);
 
         var cursor = HeaderLength;
         keyId.CopyTo(output.AsSpan(cursor));
@@ -188,6 +215,8 @@ internal static class JsonColdStorePayloadCodec
         cursor += nonce.Length;
         tag.CopyTo(output.AsSpan(cursor));
         cursor += tag.Length;
+        checksum.CopyTo(output.AsSpan(cursor));
+        cursor += checksum.Length;
         payload.CopyTo(output.AsSpan(cursor));
         return output;
     }
@@ -206,17 +235,19 @@ internal static class JsonColdStorePayloadCodec
         var keyIdLength = BinaryPrimitives.ReadUInt16LittleEndian(encoded.Slice(8, 2));
         var nonceLength = BinaryPrimitives.ReadUInt16LittleEndian(encoded.Slice(10, 2));
         var tagLength = BinaryPrimitives.ReadUInt16LittleEndian(encoded.Slice(12, 2));
-        var payloadLength = BinaryPrimitives.ReadInt32LittleEndian(encoded.Slice(14, 4));
+        var checksumLength = BinaryPrimitives.ReadUInt16LittleEndian(encoded.Slice(14, 2));
+        var payloadLength = BinaryPrimitives.ReadInt32LittleEndian(encoded.Slice(16, 4));
 
         if (payloadLength < 0)
             throw new InvalidDataException("Envelope payload length cannot be negative.");
 
-        var expectedLength = HeaderLength + keyIdLength + nonceLength + tagLength + payloadLength;
+        var expectedLength = HeaderLength + keyIdLength + nonceLength + tagLength + checksumLength + payloadLength;
         if (encoded.Length != expectedLength)
             throw new InvalidDataException("Envelope length does not match its header.");
 
         var compressed = (flags & CompressedFlag) != 0;
         var encrypted = (flags & EncryptedFlag) != 0;
+        var hasChecksum = (flags & ChecksumFlag) != 0;
         if (compressed && compression != CompressionBrotli)
             throw new InvalidDataException("Unsupported compression algorithm.");
         if (!compressed && compression != CompressionNone)
@@ -227,6 +258,10 @@ internal static class JsonColdStorePayloadCodec
             throw new InvalidDataException("Encryption metadata is inconsistent.");
         if (encrypted && (nonceLength != NonceLength || tagLength != TagLength))
             throw new InvalidDataException("AES-GCM envelope metadata is invalid.");
+        if (hasChecksum && checksumLength != ChecksumLength)
+            throw new InvalidDataException("Payload checksum metadata is invalid.");
+        if (!hasChecksum && checksumLength != 0)
+            throw new InvalidDataException("Payload checksum metadata is inconsistent.");
 
         var cursor = HeaderLength;
         var keyId = Encoding.UTF8.GetString(encoded.Slice(cursor, keyIdLength));
@@ -235,16 +270,20 @@ internal static class JsonColdStorePayloadCodec
         cursor += nonceLength;
         var tag = encoded.Slice(cursor, tagLength).ToArray();
         cursor += tagLength;
+        var checksum = encoded.Slice(cursor, checksumLength).ToArray();
+        cursor += checksumLength;
         var payload = encoded.Slice(cursor, payloadLength).ToArray();
 
-        return new Envelope(compressed, encrypted, keyId, nonce, tag, payload);
+        return new Envelope(compressed, encrypted, hasChecksum, keyId, nonce, tag, checksum, payload);
     }
 
     private sealed record Envelope(
         bool Compressed,
         bool Encrypted,
+        bool HasChecksum,
         string KeyId,
         ReadOnlyMemory<byte> Nonce,
         ReadOnlyMemory<byte> Tag,
+        ReadOnlyMemory<byte> Checksum,
         ReadOnlyMemory<byte> Payload);
 }
