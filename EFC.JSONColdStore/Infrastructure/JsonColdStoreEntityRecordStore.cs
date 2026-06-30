@@ -58,6 +58,7 @@ internal sealed class JsonColdStoreEntityRecordStore
         var descriptor = _modelDescriptor.FindEntity(entityType);
         await EnsureModelCatalogAsync(createIfMissing: true, cancellationToken);
         var recordId = descriptor.CreateRecordIdFromEntity(entity);
+        await EnsureUniqueIndexesAsync(descriptor, entity, recordId, cancellationToken);
         var payload = JsonSerializer.SerializeToUtf8Bytes(entity, entityType, EntityWriteJsonOptions);
 
         await _session.Records.WriteRecordAsync(
@@ -114,13 +115,7 @@ internal sealed class JsonColdStoreEntityRecordStore
         if (maxResults <= 0)
             return [];
 
-        if (!_indexStore.DocumentExists(descriptor.EntityName, index.StorageName)
-            && _session.Records.EntityHasRecords(descriptor.EntityName))
-        {
-            throw new InvalidOperationException(
-                $"The JSONColdStore index '{index.StorageName}' for entity '{descriptor.EntityName}' is missing. "
-                + "Rebuild JSONColdStore indexes before using this indexed read.");
-        }
+        EnsureCurrentIndexAvailable(descriptor, index);
 
         var indexKey = index.CreateIndexKeyFromValues(indexValue);
         var recordIds = await _indexStore.ReadRecordIdsAsync(
@@ -172,13 +167,7 @@ internal sealed class JsonColdStoreEntityRecordStore
         var descriptor = _modelDescriptor.FindEntity(typeof(TEntity));
         var index = descriptor.FindSinglePropertyIndex(propertyName);
         await EnsureModelCatalogAsync(createIfMissing: false, cancellationToken);
-        if (!_indexStore.DocumentExists(descriptor.EntityName, index.StorageName)
-            && _session.Records.EntityHasRecords(descriptor.EntityName))
-        {
-            throw new InvalidOperationException(
-                $"The JSONColdStore index '{index.StorageName}' for entity '{descriptor.EntityName}' is missing. "
-                + "Rebuild JSONColdStore indexes before using this indexed read.");
-        }
+        EnsureCurrentIndexAvailable(descriptor, index);
 
         var recordIds = await _indexStore.ReadAllRecordIdsAsync(
             descriptor.EntityName,
@@ -460,6 +449,124 @@ internal sealed class JsonColdStoreEntityRecordStore
                 recordId,
                 cancellationToken);
         }
+    }
+
+    private async Task EnsureUniqueIndexesAsync(
+        JsonColdStoreEntityDescriptor descriptor,
+        object entity,
+        string recordId,
+        CancellationToken cancellationToken)
+    {
+        foreach (var index in descriptor.Indexes.Where(index => index.IsUnique))
+        {
+            var indexKey = index.CreateIndexKeyFromEntity(entity);
+            EnsureCurrentIndexAvailable(descriptor, index);
+            var currentRecordIds = await _indexStore.ReadRecordIdsAsync(
+                descriptor.EntityName,
+                index.StorageName,
+                indexKey,
+                cancellationToken);
+
+            foreach (var currentRecordId in currentRecordIds)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (IsSameRecord(currentRecordId, recordId))
+                    continue;
+                if (_session.Records.RecordExists(descriptor.EntityName, currentRecordId))
+                    ThrowUniqueIndexConflict(descriptor, index, indexKey, currentRecordId);
+            }
+
+            await EnsureLegacyUniqueIndexAsync(
+                descriptor,
+                index,
+                entity,
+                recordId,
+                indexKey,
+                cancellationToken);
+        }
+    }
+
+    private async Task EnsureLegacyUniqueIndexAsync(
+        JsonColdStoreEntityDescriptor descriptor,
+        JsonColdStoreIndexDescriptor index,
+        object entity,
+        string recordId,
+        string indexKey,
+        CancellationToken cancellationToken)
+    {
+        if (index.Properties.Length == 1)
+        {
+            var lookup = await _session.LegacyRecords.LookupIndexAsync(
+                descriptor,
+                index,
+                indexKey,
+                index.Properties[0].GetValue(entity) ?? string.Empty,
+                cancellationToken);
+
+            if (lookup.UseIndex)
+            {
+                foreach (var legacyRecordId in lookup.RecordIds)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (IsSameRecord(legacyRecordId, recordId))
+                        continue;
+                    if (_session.LegacyRecords.RecordExists(descriptor, legacyRecordId))
+                        ThrowUniqueIndexConflict(descriptor, index, indexKey, legacyRecordId);
+                }
+
+                return;
+            }
+        }
+
+        await foreach (var legacyRecord in _session.LegacyRecords.ReadAllRecordsAsync(
+            descriptor,
+            cancellationToken))
+        {
+            if (IsSameRecord(legacyRecord.RecordId, recordId))
+                continue;
+
+            var legacyEntity = JsonSerializer.Deserialize(
+                legacyRecord.Payload,
+                descriptor.ClrType,
+                EntityReadJsonOptions);
+            if (legacyEntity is not null
+                && string.Equals(
+                    index.CreateIndexKeyFromEntity(legacyEntity),
+                    indexKey,
+                    StringComparison.Ordinal))
+            {
+                ThrowUniqueIndexConflict(descriptor, index, indexKey, legacyRecord.RecordId);
+            }
+        }
+    }
+
+    private void EnsureCurrentIndexAvailable(
+        JsonColdStoreEntityDescriptor descriptor,
+        JsonColdStoreIndexDescriptor index)
+    {
+        if (_indexStore.DocumentExists(descriptor.EntityName, index.StorageName)
+            || !_session.Records.EntityHasRecords(descriptor.EntityName))
+        {
+            return;
+        }
+
+        throw new InvalidOperationException(
+            $"The JSONColdStore index '{index.StorageName}' for entity '{descriptor.EntityName}' is missing. "
+            + "Rebuild JSONColdStore indexes before using this index.");
+    }
+
+    private static bool IsSameRecord(string left, string right) =>
+        string.Equals(left, right, StringComparison.Ordinal);
+
+    private static void ThrowUniqueIndexConflict(
+        JsonColdStoreEntityDescriptor descriptor,
+        JsonColdStoreIndexDescriptor index,
+        string indexKey,
+        string existingRecordId)
+    {
+        throw new InvalidOperationException(
+            $"The JSONColdStore unique index '{index.StorageName}' for entity '{descriptor.EntityName}' "
+            + $"already contains value '{indexKey}' on record '{existingRecordId}'.");
     }
 
     private async Task AddLegacyIndexResultsAsync<TEntity>(

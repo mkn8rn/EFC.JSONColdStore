@@ -305,6 +305,149 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
     }
 
     [Fact]
+    public async Task SaveChangesRejectsDuplicateCurrentUniqueIndexValue()
+    {
+        var directory = TestDirectory("savechanges-current-unique-" + Guid.NewGuid().ToString("N"));
+        var builder = new DbContextOptionsBuilder<UniqueWritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+        var existingId = Guid.Parse("61000000-0000-0000-0000-000000000001");
+        var duplicateId = Guid.Parse("61000000-0000-0000-0000-000000000002");
+
+        using (var context = new UniqueWritableDbContext(builder.Options))
+        {
+            context.Entities.Add(new WritableEntity
+            {
+                Id = existingId,
+                Value = "duplicate",
+            });
+            context.SaveChanges();
+            context.Entities.Add(new WritableEntity
+            {
+                Id = duplicateId,
+                Value = "duplicate",
+            });
+
+            var exception = Assert.Throws<InvalidOperationException>(() => context.SaveChanges());
+
+            Assert.Contains("unique index", exception.Message);
+            Assert.False(File.Exists(CurrentRecordPath(directory, duplicateId)));
+        }
+
+        using var readContext = new UniqueWritableDbContext(builder.Options);
+        var matches = await readContext.Database.ReadJsonColdStoreIndexAsync<WritableEntity>(
+            nameof(WritableEntity.Value),
+            "duplicate");
+
+        Assert.Single(matches);
+        Assert.Equal(existingId, matches[0].Id);
+    }
+
+    [Fact]
+    public async Task SaveChangesAllowsSameRecordCurrentUniqueIndexValue()
+    {
+        var directory = TestDirectory("savechanges-current-unique-same-" + Guid.NewGuid().ToString("N"));
+        var builder = new DbContextOptionsBuilder<UniqueWritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+        var id = Guid.Parse("61000000-0000-0000-0000-000000000003");
+
+        using (var context = new UniqueWritableDbContext(builder.Options))
+        {
+            var entity = new WritableEntity
+            {
+                Id = id,
+                Value = "same-record",
+                Score = 1,
+            };
+            context.Entities.Add(entity);
+            context.SaveChanges();
+            entity.Score = 2;
+
+            Assert.Equal(1, context.SaveChanges());
+        }
+
+        using var readContext = new UniqueWritableDbContext(builder.Options);
+        var read = await readContext.Database.ReadJsonColdStoreAsync<WritableEntity>(id);
+
+        Assert.NotNull(read);
+        Assert.Equal(2, read.Score);
+    }
+
+    [Fact]
+    public async Task SaveChangesRejectsDuplicateLegacyUniqueIndexValue()
+    {
+        var directory = TestDirectory("savechanges-legacy-unique-" + Guid.NewGuid().ToString("N"));
+        var builder = new DbContextOptionsBuilder<UniqueWritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+        var existingId = Guid.Parse("61000000-0000-0000-0000-000000000004");
+        var duplicateId = Guid.Parse("61000000-0000-0000-0000-000000000005");
+        await WriteLegacyEntityAsync(
+            directory,
+            new WritableEntity
+            {
+                Id = existingId,
+                Value = "legacy-duplicate",
+            });
+        await WriteLegacyIndexAsync(
+            directory,
+            nameof(WritableEntity.Value),
+            "legacy-duplicate",
+            [existingId.ToString()]);
+
+        using var context = new UniqueWritableDbContext(builder.Options);
+        context.Entities.Add(new WritableEntity
+        {
+            Id = duplicateId,
+            Value = "legacy-duplicate",
+        });
+
+        var exception = Assert.Throws<InvalidOperationException>(() => context.SaveChanges());
+
+        Assert.Contains("unique index", exception.Message);
+        Assert.False(File.Exists(CurrentRecordPath(directory, duplicateId)));
+    }
+
+    [Fact]
+    public async Task SaveChangesAllowsReplacingSameLegacyUniqueIndexRecord()
+    {
+        var directory = TestDirectory("savechanges-legacy-unique-same-" + Guid.NewGuid().ToString("N"));
+        var builder = new DbContextOptionsBuilder<UniqueWritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+        var id = Guid.Parse("61000000-0000-0000-0000-000000000006");
+        await WriteLegacyEntityAsync(
+            directory,
+            new WritableEntity
+            {
+                Id = id,
+                Value = "legacy-same-record",
+                Score = 1,
+            });
+        await WriteLegacyIndexAsync(
+            directory,
+            nameof(WritableEntity.Value),
+            "legacy-same-record",
+            [id.ToString()]);
+
+        using (var context = new UniqueWritableDbContext(builder.Options))
+        {
+            context.Entities.Add(new WritableEntity
+            {
+                Id = id,
+                Value = "legacy-same-record",
+                Score = 2,
+            });
+
+            Assert.Equal(1, context.SaveChanges());
+        }
+
+        using var readContext = new UniqueWritableDbContext(builder.Options);
+        var read = await readContext.Database.ReadJsonColdStoreAsync<WritableEntity>(id);
+
+        Assert.NotNull(read);
+        Assert.Equal(2, read.Score);
+        Assert.False(File.Exists(Path.Combine(directory, nameof(WritableEntity), $"{id}.json")));
+    }
+
+    [Fact]
     public async Task ReadJsonColdStoreAsyncReadsSavedEntityByPrimaryKey()
     {
         var directory = TestDirectory("facade-read-" + Guid.NewGuid().ToString("N"));
@@ -1660,6 +1803,13 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
             "indexes",
             JsonColdStoreNameEncoder.EncodePathSegment(propertyName) + ".json");
 
+    private static string CurrentRecordPath(string directory, Guid id) =>
+        JsonColdStorePathValidator.GetSafeChildPath(
+            directory,
+            [.. JsonColdStoreRecordStore.GetRecordPathSegments(
+                typeof(WritableEntity).FullName!,
+                id.ToString())]);
+
     private static async Task WriteLegacyEntityAsync(
         string directory,
         WritableEntity entity,
@@ -1769,6 +1919,20 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
                 entity.HasKey(value => value.Id);
                 entity.HasIndex(value => value.Value);
                 entity.HasIndex(value => value.Score);
+            });
+        }
+    }
+
+    private sealed class UniqueWritableDbContext(DbContextOptions<UniqueWritableDbContext> options) : DbContext(options)
+    {
+        public DbSet<WritableEntity> Entities => Set<WritableEntity>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<WritableEntity>(entity =>
+            {
+                entity.HasKey(value => value.Id);
+                entity.HasIndex(value => value.Value).IsUnique();
             });
         }
     }
