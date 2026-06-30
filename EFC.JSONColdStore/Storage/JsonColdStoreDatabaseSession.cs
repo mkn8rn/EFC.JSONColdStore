@@ -48,7 +48,8 @@ internal sealed class JsonColdStoreDatabaseSession : IAsyncDisposable, IDisposab
             var metadata = await catalog.EnsureInitializedAsync(cancellationToken);
             var records = new JsonColdStoreRecordStore(
                 options,
-                metadata.Policy.EncryptionEnabled);
+                metadata.Policy.EncryptionEnabled,
+                allowStorageMutations: acquireWriterLock);
             var recoveryResult = acquireWriterLock
                 ? await records.RecoverPendingManifestsAsync(cancellationToken)
                 : new JsonColdStoreRecoveryResult(0, 0);

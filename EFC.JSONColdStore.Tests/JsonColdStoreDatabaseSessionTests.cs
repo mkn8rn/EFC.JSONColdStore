@@ -74,6 +74,47 @@ public sealed class JsonColdStoreDatabaseSessionTests
     }
 
     [Fact]
+    public async Task OpenAsyncWithoutWriterLockRejectsRecordWrites()
+    {
+        var root = NewTempDirectory();
+        var options = new JsonColdStoreOptionsBuilder(root)
+            .UseFsyncOnWrite(false)
+            .Build();
+
+        await using var session = await JsonColdStoreDatabaseSession.OpenAsync(
+            options,
+            acquireWriterLock: false);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => session.Records.WriteRecordAsync("Entity", "1", "payload"u8.ToArray()));
+
+        Assert.Contains("writer lock", exception.Message);
+    }
+
+    [Fact]
+    public async Task OpenAsyncWithoutWriterLockDoesNotQuarantineCorruptRead()
+    {
+        var root = NewTempDirectory();
+        var writeOptions = new JsonColdStoreOptionsBuilder(root)
+            .UseCompression(JsonColdStoreCompression.None)
+            .UseChecksums(verifyOnStartup: true, verifyOnRead: true)
+            .UseFsyncOnWrite(false)
+            .Build();
+        var store = new JsonColdStoreRecordStore(writeOptions);
+        await store.WriteRecordAsync("Entity", "1", "payload"u8.ToArray());
+        await CorruptRecordAsync(root, "Entity", "1");
+
+        await using var session = await JsonColdStoreDatabaseSession.OpenAsync(
+            writeOptions,
+            acquireWriterLock: false);
+        await Assert.ThrowsAsync<InvalidDataException>(
+            () => session.Records.ReadRecordAsync("Entity", "1"));
+
+        Assert.True(session.Records.RecordExists("Entity", "1"));
+        Assert.False(Directory.Exists(Path.Combine(root, "_quarantine", "records")));
+    }
+
+    [Fact]
     public async Task OpenAsyncMetadataOnlyDoesNotHydrateRecords()
     {
         var root = NewTempDirectory();
@@ -137,6 +178,33 @@ public sealed class JsonColdStoreDatabaseSessionTests
 
         Assert.False(store.RecordExists("Entity", "1"));
         Assert.Single(Directory.GetFiles(Path.Combine(root, "_quarantine", "records"), "*.jcs"));
+    }
+
+    [Fact]
+    public async Task OpenAsyncFullHydrationWithoutWriterLockDoesNotQuarantineChecksumCorruptRecord()
+    {
+        var root = NewTempDirectory();
+        var writeOptions = new JsonColdStoreOptionsBuilder(root)
+            .UseCompression(JsonColdStoreCompression.None)
+            .UseFsyncOnWrite(false)
+            .Build();
+        var store = new JsonColdStoreRecordStore(writeOptions);
+        await store.WriteRecordAsync("Entity", "1", "payload"u8.ToArray());
+        await CorruptRecordAsync(root, "Entity", "1");
+        var readOptions = new JsonColdStoreOptionsBuilder(root)
+            .UseCompression(JsonColdStoreCompression.None)
+            .UseStartupMode(JsonColdStoreStartupMode.FullHydration)
+            .UseChecksums(verifyOnStartup: true, verifyOnRead: false)
+            .UseFsyncOnWrite(false)
+            .Build();
+
+        await Assert.ThrowsAsync<InvalidDataException>(
+            () => JsonColdStoreDatabaseSession.OpenAsync(
+                readOptions,
+                acquireWriterLock: false));
+
+        Assert.True(store.RecordExists("Entity", "1"));
+        Assert.False(Directory.Exists(Path.Combine(root, "_quarantine", "records")));
     }
 
     [Fact]

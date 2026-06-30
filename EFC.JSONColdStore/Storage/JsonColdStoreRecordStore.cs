@@ -15,12 +15,17 @@ internal sealed class JsonColdStoreRecordStore
 
     private readonly JsonColdStoreOptions _options;
     private readonly bool _protectManifests;
+    private readonly bool _allowStorageMutations;
     private readonly JsonColdStoreEventLog _eventLog;
 
-    internal JsonColdStoreRecordStore(JsonColdStoreOptions options, bool protectManifests = false)
+    internal JsonColdStoreRecordStore(
+        JsonColdStoreOptions options,
+        bool protectManifests = false,
+        bool allowStorageMutations = true)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _protectManifests = protectManifests;
+        _allowStorageMutations = allowStorageMutations;
         _eventLog = new JsonColdStoreEventLog(options, protectManifests);
     }
 
@@ -30,6 +35,8 @@ internal sealed class JsonColdStoreRecordStore
         ReadOnlyMemory<byte> utf8Json,
         CancellationToken cancellationToken = default)
     {
+        RequireStorageMutations();
+
         var recordPath = GetRecordPathSegments(entityName, recordId);
         var payload = JsonColdStorePayloadCodec.Encode(utf8Json.Span, _options);
         var manifest = JsonColdStoreWriteManifest.CreateWrite(recordPath, payload.Length);
@@ -71,6 +78,8 @@ internal sealed class JsonColdStoreRecordStore
         string recordId,
         CancellationToken cancellationToken = default)
     {
+        RequireStorageMutations();
+
         var recordPath = GetRecordPathSegments(entityName, recordId);
         var manifest = JsonColdStoreWriteManifest.CreateDelete(recordPath);
         var manifestPath = GetPendingManifestPathSegments(manifest.ManifestId);
@@ -212,6 +221,8 @@ internal sealed class JsonColdStoreRecordStore
     internal async Task<JsonColdStoreRecoveryResult> RecoverPendingManifestsAsync(
         CancellationToken cancellationToken = default)
     {
+        RequireStorageMutations();
+
         var pendingDirectory = JsonColdStorePathValidator.GetSafeChildPath(
             _options.DatabaseDirectory,
             "_transactions",
@@ -362,6 +373,15 @@ internal sealed class JsonColdStoreRecordStore
     private static bool IsTransientReplayException(Exception exception) =>
         exception is IOException or UnauthorizedAccessException;
 
+    private void RequireStorageMutations()
+    {
+        if (!_allowStorageMutations)
+        {
+            throw new InvalidOperationException(
+                "This JSONColdStore session does not own the writer lock and cannot mutate storage.");
+        }
+    }
+
     internal static string[] GetRecordPathSegments(string entityName, string recordId) =>
     [
         "entities",
@@ -412,6 +432,9 @@ internal sealed class JsonColdStoreRecordStore
 
     private void QuarantineRecordPath(string recordPath)
     {
+        if (!_allowStorageMutations)
+            return;
+
         if (!File.Exists(recordPath))
             return;
 
