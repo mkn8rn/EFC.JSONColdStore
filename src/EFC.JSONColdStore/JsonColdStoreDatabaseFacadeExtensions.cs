@@ -1,0 +1,39 @@
+using EFC.JSONColdStore.Infrastructure;
+using EFC.JSONColdStore.Storage;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+
+namespace EFC.JSONColdStore;
+
+/// <summary>
+/// Database facade helpers for JSONColdStore-specific operations.
+/// </summary>
+public static class JsonColdStoreDatabaseFacadeExtensions
+{
+    /// <summary>
+    /// Reads one entity by primary key directly from JSONColdStore storage.
+    /// </summary>
+    public static async Task<TEntity?> ReadJsonColdStoreAsync<TEntity>(
+        this DatabaseFacade database,
+        object keyValue,
+        CancellationToken cancellationToken = default)
+        where TEntity : class
+    {
+        ArgumentNullException.ThrowIfNull(database);
+        ArgumentNullException.ThrowIfNull(keyValue);
+
+        var context = database.GetService<ICurrentDbContext>().Context;
+        var storeOptions = database.GetService<IDbContextOptions>()
+            .FindExtension<JsonColdStoreOptionsExtension>()?.Options
+            ?? throw new InvalidOperationException("JSONColdStore options are not configured.");
+
+        await using var session = await JsonColdStoreDatabaseSession.OpenAsync(
+            storeOptions,
+            acquireWriterLock: false,
+            cancellationToken);
+        var entityStore = new JsonColdStoreEntityRecordStore(
+            session,
+            JsonColdStoreModelDescriptor.Create(context.Model));
+
+        return await entityStore.ReadEntityAsync<TEntity>(keyValue, cancellationToken);
+    }
+}

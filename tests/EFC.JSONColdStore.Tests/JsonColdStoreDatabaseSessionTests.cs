@@ -51,6 +51,29 @@ public sealed class JsonColdStoreDatabaseSessionTests
     }
 
     [Fact]
+    public async Task OpenAsyncWithoutWriterLockDoesNotRecoverPendingManifests()
+    {
+        var root = NewTempDirectory();
+        var options = new JsonColdStoreOptionsBuilder(root)
+            .UseCompression(JsonColdStoreCompression.None)
+            .UseFsyncOnWrite(false)
+            .Build();
+        var targetSegments = JsonColdStoreRecordStore.GetRecordPathSegments("Entity", "1");
+        await JsonColdStoreAtomicFileWriter.WriteAsync(root, targetSegments, "payload"u8.ToArray(), fsync: false);
+        var manifest = JsonColdStoreWriteManifest.CreateDelete(targetSegments);
+        await WriteManifestAsync(root, manifest);
+
+        await using var session = await JsonColdStoreDatabaseSession.OpenAsync(
+            options,
+            acquireWriterLock: false);
+
+        Assert.Equal(0, session.RecoveryResult.CompletedManifests);
+        Assert.Equal(0, session.RecoveryResult.FailedManifests);
+        Assert.True(File.Exists(PendingManifestPath(root, manifest.ManifestId)));
+        Assert.True(session.Records.RecordExists("Entity", "1"));
+    }
+
+    [Fact]
     public async Task OpenAsyncRejectsConcurrentWriters()
     {
         var root = NewTempDirectory();

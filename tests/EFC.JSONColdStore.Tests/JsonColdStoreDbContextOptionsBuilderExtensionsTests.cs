@@ -188,6 +188,43 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
     }
 
     [Fact]
+    public async Task ReadJsonColdStoreAsyncReadsSavedEntityByPrimaryKey()
+    {
+        var directory = TestDirectory("facade-read-" + Guid.NewGuid().ToString("N"));
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+        var entity = new WritableEntity
+        {
+            Id = Guid.Parse("4df6776d-4747-49ef-87d8-f0f60a19016a"),
+            Value = "read through facade",
+        };
+
+        using var context = new WritableDbContext(builder.Options);
+        context.Entities.Add(entity);
+        context.SaveChanges();
+
+        var read = await context.Database.ReadJsonColdStoreAsync<WritableEntity>(entity.Id);
+
+        Assert.NotNull(read);
+        Assert.Equal(entity.Id, read.Id);
+        Assert.Equal(entity.Value, read.Value);
+    }
+
+    [Fact]
+    public async Task ReadJsonColdStoreAsyncReturnsNullForMissingPrimaryKey()
+    {
+        var directory = TestDirectory("facade-read-missing-" + Guid.NewGuid().ToString("N"));
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+        using var context = new WritableDbContext(builder.Options);
+        context.Database.EnsureCreated();
+
+        var read = await context.Database.ReadJsonColdStoreAsync<WritableEntity>(Guid.NewGuid());
+
+        Assert.Null(read);
+    }
+
+    [Fact]
     public void QueryThrowsClearUnsupportedMessageUntilQueryPipelineExists()
     {
         var directory = TestDirectory("query-unsupported-" + Guid.NewGuid().ToString("N"));
