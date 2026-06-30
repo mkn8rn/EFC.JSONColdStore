@@ -304,6 +304,30 @@ public sealed class JsonColdStoreRecordStoreTests
     }
 
     [Fact]
+    public async Task RecoverPendingManifestsDeletesOrphanedStagedWriteWithoutManifest()
+    {
+        var root = NewTempDirectory();
+        var options = new JsonColdStoreOptionsBuilder(root)
+            .UseCompression(JsonColdStoreCompression.None)
+            .UseFsyncOnWrite(false)
+            .Build();
+        var store = new JsonColdStoreRecordStore(options);
+        var orphanedManifestId = Guid.NewGuid();
+        await JsonColdStoreAtomicFileWriter.WriteAsync(
+            root,
+            JsonColdStoreRecordStore.GetStagedWritePathSegments(orphanedManifestId),
+            JsonColdStorePayloadCodec.Encode("orphaned"u8, options),
+            fsync: false);
+
+        var result = await store.RecoverPendingManifestsAsync();
+
+        Assert.Equal(0, result.CompletedManifests);
+        Assert.Equal(0, result.FailedManifests);
+        Assert.Equal(1, result.DeletedOrphanedStagedWrites);
+        Assert.False(File.Exists(StagedPath(root, orphanedManifestId)));
+    }
+
+    [Fact]
     public async Task RecoverPendingManifestsReadsProtectedManifest()
     {
         var root = NewTempDirectory();

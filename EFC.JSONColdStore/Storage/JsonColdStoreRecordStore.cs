@@ -230,7 +230,10 @@ internal sealed class JsonColdStoreRecordStore
             "pending");
 
         if (!Directory.Exists(pendingDirectory))
-            return new JsonColdStoreRecoveryResult(0, 0);
+        {
+            var deletedOrphans = DeleteOrphanedStagedWrites(new HashSet<Guid>());
+            return new JsonColdStoreRecoveryResult(0, 0, deletedOrphans);
+        }
 
         var completed = 0;
         var failed = 0;
@@ -351,7 +354,46 @@ internal sealed class JsonColdStoreRecordStore
             }
         }
 
-        return new JsonColdStoreRecoveryResult(completed, failed);
+        var deletedOrphanedStagedWrites = DeleteOrphanedStagedWrites(ReadPendingManifestIds(pendingDirectory));
+        return new JsonColdStoreRecoveryResult(completed, failed, deletedOrphanedStagedWrites);
+    }
+
+    private static HashSet<Guid> ReadPendingManifestIds(string pendingDirectory)
+    {
+        if (!Directory.Exists(pendingDirectory))
+            return [];
+
+        return Directory.EnumerateFiles(pendingDirectory, "*.json")
+            .Select(path => Path.GetFileNameWithoutExtension(path))
+            .Where(name => Guid.TryParseExact(name, "N", out _))
+            .Select(name => Guid.ParseExact(name, "N"))
+            .ToHashSet();
+    }
+
+    private int DeleteOrphanedStagedWrites(IReadOnlySet<Guid> activeManifestIds)
+    {
+        var stagedDirectory = JsonColdStorePathValidator.GetSafeChildPath(
+            _options.DatabaseDirectory,
+            "_transactions",
+            "staged");
+        if (!Directory.Exists(stagedDirectory))
+            return 0;
+
+        var deleted = 0;
+        foreach (var stagedPath in Directory.EnumerateFiles(stagedDirectory, "*.jcs"))
+        {
+            var stagedName = Path.GetFileNameWithoutExtension(stagedPath);
+            if (Guid.TryParseExact(stagedName, "N", out var manifestId)
+                && activeManifestIds.Contains(manifestId))
+            {
+                continue;
+            }
+
+            File.Delete(stagedPath);
+            deleted++;
+        }
+
+        return deleted;
     }
 
     private bool StagedPayloadExists(JsonColdStoreWriteManifest manifest)
@@ -585,7 +627,10 @@ internal sealed record JsonColdStoreWriteManifest(
             Operation: JsonColdStoreManifestOperation.Delete);
 }
 
-internal sealed record JsonColdStoreRecoveryResult(int CompletedManifests, int FailedManifests);
+internal sealed record JsonColdStoreRecoveryResult(
+    int CompletedManifests,
+    int FailedManifests,
+    int DeletedOrphanedStagedWrites = 0);
 
 internal sealed record JsonColdStoreStartupValidationResult(int VerifiedRecords);
 
