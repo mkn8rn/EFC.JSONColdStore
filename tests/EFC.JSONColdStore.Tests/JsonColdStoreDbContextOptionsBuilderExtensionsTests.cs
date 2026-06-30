@@ -157,7 +157,7 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
     }
 
     [Fact]
-    public void SaveChangesThrowsForDeletesUntilManifestBackedDeleteExists()
+    public async Task SaveChangesDeletesEntityThroughStorageSession()
     {
         var directory = TestDirectory("delete-unsupported-" + Guid.NewGuid().ToString("N"));
         var builder = new DbContextOptionsBuilder<WritableDbContext>();
@@ -172,9 +172,19 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
         context.Entities.Add(entity);
         context.SaveChanges();
         context.Entities.Remove(entity);
+        Assert.Equal(1, context.SaveChanges());
 
-        var exception = Assert.Throws<NotSupportedException>(() => context.SaveChanges());
-        Assert.Contains("Delete operations are not implemented yet", exception.Message);
+        var storageOptions = new JsonColdStoreOptionsBuilder(directory)
+            .UseFsyncOnWrite(false)
+            .Build();
+        await using var session = await JsonColdStoreDatabaseSession.OpenAsync(storageOptions);
+        var model = CreateWritableModel();
+        var store = new JsonColdStoreEntityRecordStore(
+            session,
+            JsonColdStoreModelDescriptor.Create(model));
+
+        var read = await store.ReadEntityAsync<WritableEntity>(entity.Id);
+        Assert.Null(read);
     }
 
     private static string TestDirectory(string name) =>

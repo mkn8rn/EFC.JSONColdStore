@@ -86,7 +86,13 @@ internal sealed class JsonColdStoreDatabase : IDatabase
                     break;
 
                 case EntityState.Deleted:
-                    throw Unsupported("Delete operations are not implemented yet.");
+                    var deletedEntity = entry.ToEntityEntry().Entity;
+                    await entityStore.DeleteEntityAsync(
+                        deletedEntity,
+                        entry.EntityType.ClrType,
+                        cancellationToken);
+                    saved++;
+                    break;
 
                 default:
                     break;

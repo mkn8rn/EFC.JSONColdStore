@@ -66,4 +66,21 @@ internal sealed class JsonColdStoreEntityRecordStore
 
         return JsonSerializer.Deserialize<TEntity>(payload, EntityJsonOptions);
     }
+
+    internal async Task DeleteEntityAsync(
+        object entity,
+        Type entityType,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(entity);
+        ArgumentNullException.ThrowIfNull(entityType);
+
+        var descriptor = _modelDescriptor.FindEntity(entityType);
+        var recordId = descriptor.CreateRecordIdFromEntity(entity);
+
+        await _session.Records.DeleteRecordAsync(
+            descriptor.EntityName,
+            recordId,
+            cancellationToken);
+    }
 }

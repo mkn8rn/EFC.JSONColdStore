@@ -62,7 +62,7 @@ public sealed class JsonColdStoreRecordStoreTests
         var store = new JsonColdStoreRecordStore(options);
         var targetSegments = JsonColdStoreRecordStore.GetRecordPathSegments("Entity", "1");
         await JsonColdStoreAtomicFileWriter.WriteAsync(root, targetSegments, "payload"u8.ToArray(), fsync: false);
-        var manifest = JsonColdStoreWriteManifest.Create(targetSegments, payloadLength: 7);
+        var manifest = JsonColdStoreWriteManifest.CreateWrite(targetSegments, payloadLength: 7);
         await WriteManifestAsync(root, manifest);
 
         var result = await store.RecoverPendingManifestsAsync();
@@ -81,7 +81,7 @@ public sealed class JsonColdStoreRecordStoreTests
             .UseFsyncOnWrite(false)
             .Build();
         var store = new JsonColdStoreRecordStore(options);
-        var manifest = JsonColdStoreWriteManifest.Create(
+        var manifest = JsonColdStoreWriteManifest.CreateWrite(
             JsonColdStoreRecordStore.GetRecordPathSegments("Missing", "1"),
             payloadLength: 7);
         await WriteManifestAsync(root, manifest);
@@ -92,6 +92,46 @@ public sealed class JsonColdStoreRecordStoreTests
         Assert.Equal(1, result.FailedManifests);
         Assert.False(File.Exists(ManifestPath(root, manifest.ManifestId)));
         Assert.True(File.Exists(Path.Combine(root, "_transactions", "failed", manifest.ManifestId.ToString("N") + ".json")));
+    }
+
+    [Fact]
+    public async Task DeleteRecordAsyncRemovesRecordAndPendingManifest()
+    {
+        var root = NewTempDirectory();
+        var options = new JsonColdStoreOptionsBuilder(root)
+            .UseCompression(JsonColdStoreCompression.None)
+            .UseFsyncOnWrite(false)
+            .Build();
+        var store = new JsonColdStoreRecordStore(options);
+        await store.WriteRecordAsync("Entity", "1", "payload"u8.ToArray());
+
+        await store.DeleteRecordAsync("Entity", "1");
+
+        Assert.False(store.RecordExists("Entity", "1"));
+        Assert.False(Directory.Exists(Path.Combine(root, "_transactions", "pending"))
+            && Directory.GetFiles(Path.Combine(root, "_transactions", "pending"), "*.json").Length > 0);
+    }
+
+    [Fact]
+    public async Task RecoverPendingManifestsCompletesPendingDelete()
+    {
+        var root = NewTempDirectory();
+        var options = new JsonColdStoreOptionsBuilder(root)
+            .UseCompression(JsonColdStoreCompression.None)
+            .UseFsyncOnWrite(false)
+            .Build();
+        var store = new JsonColdStoreRecordStore(options);
+        var targetSegments = JsonColdStoreRecordStore.GetRecordPathSegments("Entity", "1");
+        await JsonColdStoreAtomicFileWriter.WriteAsync(root, targetSegments, "payload"u8.ToArray(), fsync: false);
+        var manifest = JsonColdStoreWriteManifest.CreateDelete(targetSegments);
+        await WriteManifestAsync(root, manifest);
+
+        var result = await store.RecoverPendingManifestsAsync();
+
+        Assert.Equal(1, result.CompletedManifests);
+        Assert.Equal(0, result.FailedManifests);
+        Assert.False(File.Exists(ManifestPath(root, manifest.ManifestId)));
+        Assert.False(store.RecordExists("Entity", "1"));
     }
 
     [Fact]

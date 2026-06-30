@@ -40,7 +40,7 @@ public sealed class JsonColdStoreDatabaseSessionTests
             .Build();
         var targetSegments = JsonColdStoreRecordStore.GetRecordPathSegments("Entity", "1");
         await JsonColdStoreAtomicFileWriter.WriteAsync(root, targetSegments, "payload"u8.ToArray(), fsync: false);
-        var manifest = JsonColdStoreWriteManifest.Create(targetSegments, payloadLength: 7);
+        var manifest = JsonColdStoreWriteManifest.CreateWrite(targetSegments, payloadLength: 7);
         await WriteManifestAsync(root, manifest);
 
         await using var session = await JsonColdStoreDatabaseSession.OpenAsync(options);
