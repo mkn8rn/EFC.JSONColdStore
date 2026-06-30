@@ -549,6 +549,40 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
     }
 
     [Fact]
+    public async Task RepairJsonColdStoreAsyncQuarantinesCorruptRecordAndKeepsValidRecords()
+    {
+        var directory = TestDirectory("repair-corrupt-" + Guid.NewGuid().ToString("N"));
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+        var corruptId = Guid.Parse("51000000-0000-0000-0000-000000000006");
+        var validId = Guid.Parse("51000000-0000-0000-0000-000000000007");
+        using var context = new WritableDbContext(builder.Options);
+        context.Entities.AddRange(
+            new WritableEntity
+            {
+                Id = corruptId,
+                Value = "corrupt me",
+            },
+            new WritableEntity
+            {
+                Id = validId,
+                Value = "keep me",
+            });
+        context.SaveChanges();
+        var corruptRecordPath = await CorruptStoredRecordAsync(directory, corruptId);
+
+        var result = await context.Database.RepairJsonColdStoreAsync();
+        var valid = await context.Database.ReadJsonColdStoreAsync<WritableEntity>(validId);
+
+        Assert.Equal(1, result.VerifiedRecords);
+        Assert.Equal(1, result.QuarantinedRecords);
+        Assert.False(File.Exists(corruptRecordPath));
+        Assert.NotNull(valid);
+        Assert.Equal("keep me", valid.Value);
+        Assert.Single(Directory.GetFiles(Path.Combine(directory, "_quarantine", "records"), "*.jcs"));
+    }
+
+    [Fact]
     public async Task ReadJsonColdStoreAsyncReadsLegacyPlainEntityWithoutCreatingMetadata()
     {
         var directory = TestDirectory("legacy-plain-" + Guid.NewGuid().ToString("N"));

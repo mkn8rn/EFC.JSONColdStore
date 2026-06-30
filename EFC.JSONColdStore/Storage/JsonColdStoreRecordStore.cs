@@ -219,6 +219,56 @@ internal sealed class JsonColdStoreRecordStore
         return new JsonColdStoreStartupValidationResult(verifiedRecords);
     }
 
+    internal async Task<JsonColdStoreRecordRepairResult> RepairAllRecordsAsync(
+        CancellationToken cancellationToken = default)
+    {
+        RequireStorageMutations();
+
+        var entitiesDirectory = JsonColdStorePathValidator.GetSafeChildPath(
+            _options.DatabaseDirectory,
+            "entities");
+
+        if (!Directory.Exists(entitiesDirectory))
+            return new JsonColdStoreRecordRepairResult(0, 0);
+
+        var repairOptions = _options with
+        {
+            Integrity = _options.Integrity with
+            {
+                VerifyOnRead = _options.Integrity.EnableChecksums,
+            },
+        };
+        var verifiedRecords = 0;
+        var quarantinedRecords = 0;
+        var recordPaths = Directory.EnumerateFiles(
+                entitiesDirectory,
+                "*.jcs",
+                SearchOption.AllDirectories)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+
+        foreach (var recordPath in recordPaths)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!File.Exists(recordPath))
+                continue;
+
+            var payload = await File.ReadAllBytesAsync(recordPath, cancellationToken);
+            try
+            {
+                _ = JsonColdStorePayloadCodec.Decode(payload, repairOptions);
+                verifiedRecords++;
+            }
+            catch (InvalidDataException)
+            {
+                QuarantineRecordPath(recordPath);
+                quarantinedRecords++;
+            }
+        }
+
+        return new JsonColdStoreRecordRepairResult(verifiedRecords, quarantinedRecords);
+    }
+
     internal async Task<JsonColdStoreRecoveryResult> RecoverPendingManifestsAsync(
         CancellationToken cancellationToken = default)
     {
@@ -633,6 +683,10 @@ internal sealed record JsonColdStoreRecoveryResult(
     int DeletedOrphanedStagedWrites = 0);
 
 internal sealed record JsonColdStoreStartupValidationResult(int VerifiedRecords);
+
+internal sealed record JsonColdStoreRecordRepairResult(
+    int VerifiedRecords,
+    int QuarantinedRecords);
 
 internal enum JsonColdStoreManifestOperation
 {

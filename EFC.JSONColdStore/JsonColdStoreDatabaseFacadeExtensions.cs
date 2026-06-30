@@ -160,4 +160,35 @@ public static class JsonColdStoreDatabaseFacadeExtensions
             result.VerifiedRecords,
             result.VerifiedLegacyRecords);
     }
+
+    /// <summary>
+    /// Verifies JSONColdStore records and quarantines corrupt JSONColdStore record files.
+    /// </summary>
+    public static async Task<JsonColdStoreRepairResult> RepairJsonColdStoreAsync(
+        this DatabaseFacade database,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(database);
+
+        var storeOptions = database.GetService<IDbContextOptions>()
+            .FindExtension<JsonColdStoreOptionsExtension>()?.Options
+            ?? throw new InvalidOperationException("JSONColdStore options are not configured.");
+        var repairOptions = storeOptions with
+        {
+            Integrity = storeOptions.Integrity with
+            {
+                VerifyOnRead = storeOptions.Integrity.EnableChecksums,
+            },
+        };
+
+        await using var session = await JsonColdStoreDatabaseSession.OpenAsync(
+            repairOptions,
+            acquireWriterLock: true,
+            cancellationToken);
+
+        var result = await session.Records.RepairAllRecordsAsync(cancellationToken);
+        return new JsonColdStoreRepairResult(
+            result.VerifiedRecords,
+            result.QuarantinedRecords);
+    }
 }
