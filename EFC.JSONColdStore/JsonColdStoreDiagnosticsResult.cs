@@ -20,7 +20,7 @@ public sealed record JsonColdStoreDiagnosticsResult
     /// <summary>Compression policy recorded by root metadata or current options.</summary>
     public JsonColdStoreCompression Compression { get; init; }
 
-    /// <summary>Whether the store metadata says payload encryption is enabled.</summary>
+    /// <summary>Whether payload encryption is enabled by metadata or current options.</summary>
     public bool EncryptionEnabled { get; init; }
 
     /// <summary>Startup mode recorded by root metadata or current options.</summary>
@@ -58,6 +58,9 @@ public sealed record JsonColdStoreDiagnosticsResult
 
     /// <summary>Number of provider event log files.</summary>
     public int EventLogFileCount { get; init; }
+
+    /// <summary>Number of orphaned atomic writer temp files outside snapshots.</summary>
+    public int TemporaryFileCount { get; init; }
 
     /// <summary>Per-entity redacted diagnostics for the current EF model.</summary>
     public required IReadOnlyList<JsonColdStoreEntityDiagnostics> Entities { get; init; }

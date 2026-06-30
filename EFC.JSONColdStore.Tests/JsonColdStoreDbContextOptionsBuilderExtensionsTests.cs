@@ -757,6 +757,61 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
     }
 
     [Fact]
+    public async Task GetJsonColdStoreDiagnosticsAsyncCountsTemporaryFilesWithoutDeletingThem()
+    {
+        var directory = TestDirectory("diagnostics-temp-" + Guid.NewGuid().ToString("N"));
+        var nestedDirectory = Path.Combine(directory, "entities", "Entity", "records");
+        var snapshotDirectory = Path.Combine(directory, "_snapshots", "snapshot-1");
+        var rootTemp = Path.Combine(directory, "_store.json.tmp-diagnostic");
+        var nestedTemp = Path.Combine(nestedDirectory, "1.jcs.tmp-diagnostic");
+        var snapshotTemp = Path.Combine(snapshotDirectory, "kept.jcs.tmp-diagnostic");
+        Directory.CreateDirectory(nestedDirectory);
+        Directory.CreateDirectory(snapshotDirectory);
+        await File.WriteAllTextAsync(rootTemp, "root temp");
+        await File.WriteAllTextAsync(nestedTemp, "nested temp");
+        await File.WriteAllTextAsync(snapshotTemp, "snapshot temp");
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+
+        using var context = new WritableDbContext(builder.Options);
+        var diagnostics = await context.Database.GetJsonColdStoreDiagnosticsAsync();
+
+        Assert.Equal(2, diagnostics.TemporaryFileCount);
+        Assert.True(File.Exists(rootTemp));
+        Assert.True(File.Exists(nestedTemp));
+        Assert.True(File.Exists(snapshotTemp));
+        Assert.False(File.Exists(Path.Combine(directory, "_store.json")));
+        Assert.False(File.Exists(Path.Combine(directory, "_model.json")));
+    }
+
+    [Fact]
+    public async Task GetJsonColdStoreDiagnosticsAsyncReportsConfiguredEncryptionWithoutMetadata()
+    {
+        var directory = TestDirectory("diagnostics-encryption-no-metadata-" + Guid.NewGuid().ToString("N"));
+        using var key = JsonColdStoreEncryptionKey.FromBytes(new byte[32]);
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(
+            directory,
+            store => store
+                .UseFsyncOnWrite(false)
+                .UseEncryption(new JsonColdStoreEncryptionOptions
+                {
+                    Key = key,
+                    KeyId = "diagnostics-no-metadata-key",
+                }));
+
+        using var context = new WritableDbContext(builder.Options);
+        var diagnostics = await context.Database.GetJsonColdStoreDiagnosticsAsync();
+        var serialized = JsonSerializer.Serialize(diagnostics);
+
+        Assert.False(diagnostics.HasStoreMetadata);
+        Assert.True(diagnostics.EncryptionEnabled);
+        Assert.DoesNotContain("diagnostics-no-metadata-key", serialized, StringComparison.Ordinal);
+        Assert.False(File.Exists(Path.Combine(directory, "_store.json")));
+        Assert.False(File.Exists(Path.Combine(directory, "_model.json")));
+    }
+
+    [Fact]
     public async Task ReadJsonColdStoreAsyncReadsLegacyPlainEntityWithoutCreatingMetadata()
     {
         var directory = TestDirectory("legacy-plain-" + Guid.NewGuid().ToString("N"));

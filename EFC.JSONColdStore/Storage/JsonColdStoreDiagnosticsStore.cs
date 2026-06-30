@@ -30,7 +30,7 @@ internal sealed class JsonColdStoreDiagnosticsStore
             FormatVersion = metadata?.FormatVersion,
             ProviderVersion = metadata?.ProviderVersion,
             Compression = metadata?.Policy.Compression ?? _options.Compression,
-            EncryptionEnabled = metadata?.Policy.EncryptionEnabled ?? false,
+            EncryptionEnabled = metadata?.Policy.EncryptionEnabled ?? _options.Encryption is not null,
             StartupMode = metadata?.Policy.StartupMode ?? _options.StartupMode,
             FullScanPolicy = metadata?.Policy.FullScanPolicy ?? _options.FullScanPolicy,
             MappedEntityCount = entityDiagnostics.Length,
@@ -43,6 +43,7 @@ internal sealed class JsonColdStoreDiagnosticsStore
             QuarantineFileCount = CountFiles("_quarantine", "records", "*.jcs"),
             SnapshotCount = CountDirectories("_snapshots"),
             EventLogFileCount = CountFiles("_events", "*.jsonl"),
+            TemporaryFileCount = CountTemporaryFiles(_options.DatabaseDirectory),
             Entities = entityDiagnostics,
         };
     }
@@ -119,5 +120,24 @@ internal sealed class JsonColdStoreDiagnosticsStore
         return Directory.Exists(directory)
             ? Directory.EnumerateDirectories(directory).Count()
             : 0;
+    }
+
+    private static int CountTemporaryFiles(string directory)
+    {
+        if (!Directory.Exists(directory))
+            return 0;
+
+        var count = Directory.EnumerateFiles(directory)
+            .Count(path => Path.GetFileName(path).Contains(".tmp-", StringComparison.Ordinal));
+
+        foreach (var childDirectory in Directory.EnumerateDirectories(directory))
+        {
+            if (string.Equals(Path.GetFileName(childDirectory), "_snapshots", StringComparison.Ordinal))
+                continue;
+
+            count += CountTemporaryFiles(childDirectory);
+        }
+
+        return count;
     }
 }
