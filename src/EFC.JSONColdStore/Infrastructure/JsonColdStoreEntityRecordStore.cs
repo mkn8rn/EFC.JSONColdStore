@@ -27,10 +27,20 @@ internal sealed class JsonColdStoreEntityRecordStore
         where TEntity : class
     {
         ArgumentNullException.ThrowIfNull(entity);
+        await WriteEntityAsync(entity, typeof(TEntity), cancellationToken);
+    }
 
-        var descriptor = _modelDescriptor.FindEntity(typeof(TEntity));
+    internal async Task WriteEntityAsync(
+        object entity,
+        Type entityType,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(entity);
+        ArgumentNullException.ThrowIfNull(entityType);
+
+        var descriptor = _modelDescriptor.FindEntity(entityType);
         var recordId = descriptor.CreateRecordIdFromEntity(entity);
-        var payload = JsonSerializer.SerializeToUtf8Bytes(entity, EntityJsonOptions);
+        var payload = JsonSerializer.SerializeToUtf8Bytes(entity, entityType, EntityJsonOptions);
 
         await _session.Records.WriteRecordAsync(
             descriptor.EntityName,

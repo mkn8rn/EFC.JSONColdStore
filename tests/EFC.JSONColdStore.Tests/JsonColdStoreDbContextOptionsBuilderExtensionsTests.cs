@@ -1,5 +1,6 @@
 using EFC.JSONColdStore;
 using EFC.JSONColdStore.Infrastructure;
+using EFC.JSONColdStore.Storage;
 using Microsoft.EntityFrameworkCore;
 
 namespace EFC.JSONColdStore.Tests;
@@ -122,8 +123,86 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
         Assert.Contains("Explicit transactions are not implemented yet", exception.Message);
     }
 
+    [Fact]
+    public async Task SaveChangesPersistsAddedEntityThroughStorageSession()
+    {
+        var directory = TestDirectory("savechanges-" + Guid.NewGuid().ToString("N"));
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+        var entity = new WritableEntity
+        {
+            Id = Guid.Parse("4c263762-5d19-49d8-a5a3-62af6de12a96"),
+            Value = "saved through EF",
+        };
+
+        using (var context = new WritableDbContext(builder.Options))
+        {
+            context.Entities.Add(entity);
+            Assert.Equal(1, context.SaveChanges());
+        }
+
+        var storageOptions = new JsonColdStoreOptionsBuilder(directory)
+            .UseFsyncOnWrite(false)
+            .Build();
+        await using var session = await JsonColdStoreDatabaseSession.OpenAsync(storageOptions);
+        var model = CreateWritableModel();
+        var store = new JsonColdStoreEntityRecordStore(
+            session,
+            JsonColdStoreModelDescriptor.Create(model));
+
+        var read = await store.ReadEntityAsync<WritableEntity>(entity.Id);
+        Assert.NotNull(read);
+        Assert.Equal(entity.Id, read.Id);
+        Assert.Equal(entity.Value, read.Value);
+    }
+
+    [Fact]
+    public void SaveChangesThrowsForDeletesUntilManifestBackedDeleteExists()
+    {
+        var directory = TestDirectory("delete-unsupported-" + Guid.NewGuid().ToString("N"));
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+        var entity = new WritableEntity
+        {
+            Id = Guid.NewGuid(),
+            Value = "delete me later",
+        };
+
+        using var context = new WritableDbContext(builder.Options);
+        context.Entities.Add(entity);
+        context.SaveChanges();
+        context.Entities.Remove(entity);
+
+        var exception = Assert.Throws<NotSupportedException>(() => context.SaveChanges());
+        Assert.Contains("Delete operations are not implemented yet", exception.Message);
+    }
+
     private static string TestDirectory(string name) =>
         Path.Combine(Path.GetTempPath(), "jsoncoldstore-tests", name);
 
     private sealed class TestDbContext(DbContextOptions<TestDbContext> options) : DbContext(options);
+
+    private static Microsoft.EntityFrameworkCore.Metadata.IModel CreateWritableModel()
+    {
+        var modelBuilder = new ModelBuilder(new Microsoft.EntityFrameworkCore.Metadata.Conventions.ConventionSet());
+        modelBuilder.Entity<WritableEntity>(entity => entity.HasKey(value => value.Id));
+        return modelBuilder.FinalizeModel();
+    }
+
+    private sealed class WritableDbContext(DbContextOptions<WritableDbContext> options) : DbContext(options)
+    {
+        public DbSet<WritableEntity> Entities => Set<WritableEntity>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<WritableEntity>(entity => entity.HasKey(value => value.Id));
+        }
+    }
+
+    private sealed class WritableEntity
+    {
+        public Guid Id { get; set; }
+
+        public string Value { get; set; } = string.Empty;
+    }
 }
