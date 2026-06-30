@@ -1,0 +1,104 @@
+using System.Security.Cryptography;
+using System.Text;
+using EFC.JSONColdStore;
+using EFC.JSONColdStore.Storage;
+
+namespace EFC.JSONColdStore.Tests;
+
+public sealed class JsonColdStorePayloadCodecTests
+{
+    [Fact]
+    public void EncodeDecodeWithoutEncryptionRoundTrips()
+    {
+        var options = new JsonColdStoreOptionsBuilder(TestDirectory("plain"))
+            .UseCompression(JsonColdStoreCompression.None)
+            .Build();
+        var payload = Encoding.UTF8.GetBytes("""{"message":"hello"}""");
+
+        var encoded = JsonColdStorePayloadCodec.Encode(payload, options);
+        var decoded = JsonColdStorePayloadCodec.Decode(encoded, options);
+
+        Assert.Equal(payload, decoded);
+    }
+
+    [Fact]
+    public void BrotliCompressionRoundTripsRepetitivePayload()
+    {
+        var options = new JsonColdStoreOptionsBuilder(TestDirectory("compressed"))
+            .UseCompression(JsonColdStoreCompression.Brotli)
+            .Build();
+        var payload = Encoding.UTF8.GetBytes(new string('a', 16_000));
+
+        var encoded = JsonColdStorePayloadCodec.Encode(payload, options);
+        var decoded = JsonColdStorePayloadCodec.Decode(encoded, options);
+
+        Assert.True(encoded.Length < payload.Length);
+        Assert.Equal(payload, decoded);
+    }
+
+    [Fact]
+    public void EncryptedPayloadDoesNotExposePlaintextAndRoundTrips()
+    {
+        var keyBytes = Enumerable.Range(0, 32).Select(i => (byte)i).ToArray();
+        using var key = JsonColdStoreEncryptionKey.FromBytes(keyBytes);
+        var options = new JsonColdStoreOptionsBuilder(TestDirectory("encrypted"))
+            .UseCompression(JsonColdStoreCompression.None)
+            .UseEncryption(new JsonColdStoreEncryptionOptions
+            {
+                Key = key,
+                KeyId = "test-key",
+            })
+            .Build();
+        var payload = Encoding.UTF8.GetBytes("""{"secret":"consumer data"}""");
+
+        var encoded = JsonColdStorePayloadCodec.Encode(payload, options);
+        var encodedText = Encoding.UTF8.GetString(encoded);
+        var decoded = JsonColdStorePayloadCodec.Decode(encoded, options);
+
+        Assert.DoesNotContain("consumer data", encodedText);
+        Assert.Contains("test-key", encodedText);
+        Assert.Equal(payload, decoded);
+    }
+
+    [Fact]
+    public void EncryptedPayloadRejectsWrongKey()
+    {
+        using var correctKey = JsonColdStoreEncryptionKey.FromBytes(new byte[32]);
+        using var wrongKey = JsonColdStoreEncryptionKey.FromBytes(Enumerable.Repeat((byte)7, 32).ToArray());
+        var writeOptions = new JsonColdStoreOptionsBuilder(TestDirectory("wrong-key"))
+            .UseEncryptionKey(correctKey)
+            .Build();
+        var readOptions = new JsonColdStoreOptionsBuilder(TestDirectory("wrong-key"))
+            .UseEncryptionKey(wrongKey)
+            .Build();
+
+        var encoded = JsonColdStorePayloadCodec.Encode("secret"u8, writeOptions);
+
+        Assert.ThrowsAny<CryptographicException>(
+            () => JsonColdStorePayloadCodec.Decode(encoded, readOptions));
+    }
+
+    [Fact]
+    public void RequireEncryptedStoreRejectsPlainEnvelope()
+    {
+        using var key = JsonColdStoreEncryptionKey.FromBytes(new byte[32]);
+        var plainOptions = new JsonColdStoreOptionsBuilder(TestDirectory("require-encrypted"))
+            .UseCompression(JsonColdStoreCompression.None)
+            .Build();
+        var encryptedOptions = new JsonColdStoreOptionsBuilder(TestDirectory("require-encrypted"))
+            .UseEncryption(new JsonColdStoreEncryptionOptions
+            {
+                Key = key,
+                RequireEncryptedStore = true,
+            })
+            .Build();
+
+        var encoded = JsonColdStorePayloadCodec.Encode("plain"u8, plainOptions);
+
+        Assert.Throws<InvalidOperationException>(
+            () => JsonColdStorePayloadCodec.Decode(encoded, encryptedOptions));
+    }
+
+    private static string TestDirectory(string name) =>
+        Path.Combine(Path.GetTempPath(), "jsoncoldstore-codec-tests", name);
+}
