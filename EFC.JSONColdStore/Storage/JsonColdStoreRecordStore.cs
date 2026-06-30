@@ -39,9 +39,16 @@ internal sealed class JsonColdStoreRecordStore
 
         var recordPath = GetRecordPathSegments(entityName, recordId);
         var payload = JsonColdStorePayloadCodec.Encode(utf8Json.Span, _options);
-        var manifest = JsonColdStoreWriteManifest.CreateWrite(recordPath, payload.Length);
+        var manifest = JsonColdStoreWriteManifest.CreateStagedWrite(recordPath, payload.Length);
         var manifestPath = GetPendingManifestPathSegments(manifest.ManifestId);
         var manifestBytes = EncodeManifest(manifest);
+
+        await JsonColdStoreAtomicFileWriter.WriteAsync(
+            _options.DatabaseDirectory,
+            manifest.StagedPathSegments!,
+            payload,
+            _options.FsyncOnWrite,
+            cancellationToken);
 
         await JsonColdStoreAtomicFileWriter.WriteAsync(
             _options.DatabaseDirectory,
@@ -52,13 +59,7 @@ internal sealed class JsonColdStoreRecordStore
 
         try
         {
-            await JsonColdStoreAtomicFileWriter.WriteAsync(
-                _options.DatabaseDirectory,
-                recordPath,
-                payload,
-                _options.FsyncOnWrite,
-                cancellationToken);
-
+            PublishStagedWrite(manifest);
             DeleteIfExists(manifestPath);
             await _eventLog.AppendAsync(
                 "record.write",
@@ -277,6 +278,7 @@ internal sealed class JsonColdStoreRecordStore
                     await ExecuteReplayAsync(
                         _ =>
                         {
+                            DeleteStagedIfExists(manifest);
                             File.Delete(manifestPath);
                             return Task.CompletedTask;
                         },
@@ -285,6 +287,25 @@ internal sealed class JsonColdStoreRecordStore
                         "manifest.recovered",
                         manifestId: manifest.ManifestId,
                         detail: "write",
+                        cancellationToken: cancellationToken);
+                    completed++;
+                    break;
+
+                case JsonColdStoreManifestOperation.Write
+                    when manifest.StagedPathSegments is not null
+                    && StagedPayloadExists(manifest):
+                    await ExecuteReplayAsync(
+                        _ =>
+                        {
+                            PublishStagedWrite(manifest);
+                            File.Delete(manifestPath);
+                            return Task.CompletedTask;
+                        },
+                        cancellationToken);
+                    await _eventLog.AppendAsync(
+                        "manifest.recovered",
+                        manifestId: manifest.ManifestId,
+                        detail: "write-staged",
                         cancellationToken: cancellationToken);
                     completed++;
                     break;
@@ -331,6 +352,40 @@ internal sealed class JsonColdStoreRecordStore
         }
 
         return new JsonColdStoreRecoveryResult(completed, failed);
+    }
+
+    private bool StagedPayloadExists(JsonColdStoreWriteManifest manifest)
+    {
+        var stagedPath = JsonColdStorePathValidator.GetSafeChildPath(
+            _options.DatabaseDirectory,
+            [.. manifest.StagedPathSegments!]);
+        return File.Exists(stagedPath);
+    }
+
+    private void PublishStagedWrite(JsonColdStoreWriteManifest manifest)
+    {
+        if (manifest.StagedPathSegments is null)
+            throw new InvalidDataException("The write manifest does not contain a staged payload path.");
+
+        var stagedPath = JsonColdStorePathValidator.GetSafeChildPath(
+            _options.DatabaseDirectory,
+            [.. manifest.StagedPathSegments]);
+        var targetPath = JsonColdStorePathValidator.GetSafeChildPath(
+            _options.DatabaseDirectory,
+            [.. manifest.TargetPathSegments]);
+        var targetDirectory = Path.GetDirectoryName(targetPath)
+            ?? throw new InvalidOperationException("The target path has no directory.");
+
+        Directory.CreateDirectory(targetDirectory);
+        File.Move(stagedPath, targetPath, overwrite: true);
+    }
+
+    private void DeleteStagedIfExists(JsonColdStoreWriteManifest manifest)
+    {
+        if (manifest.StagedPathSegments is null)
+            return;
+
+        DeleteIfExists(manifest.StagedPathSegments);
     }
 
     private byte[] EncodeManifest(JsonColdStoreWriteManifest manifest)
@@ -395,6 +450,13 @@ internal sealed class JsonColdStoreRecordStore
         "_transactions",
         "pending",
         manifestId.ToString("N") + ".json",
+    ];
+
+    internal static string[] GetStagedWritePathSegments(Guid manifestId) =>
+    [
+        "_transactions",
+        "staged",
+        manifestId.ToString("N") + ".jcs",
     ];
 
     private void DeleteIfExists(IEnumerable<string> pathSegments)
@@ -482,6 +544,7 @@ internal sealed record JsonColdStoreWriteManifest(
     DateTimeOffset CreatedAt,
     string[] TargetPathSegments,
     int PayloadLength,
+    string[]? StagedPathSegments = null,
     JsonColdStoreManifestOperation Operation = JsonColdStoreManifestOperation.Write)
 {
     internal static JsonColdStoreWriteManifest CreateWrite(string[] targetPathSegments, int payloadLength)
@@ -494,6 +557,22 @@ internal sealed record JsonColdStoreWriteManifest(
             DateTimeOffset.UtcNow,
             targetPathSegments,
             payloadLength,
+            null,
+            JsonColdStoreManifestOperation.Write);
+    }
+
+    internal static JsonColdStoreWriteManifest CreateStagedWrite(string[] targetPathSegments, int payloadLength)
+    {
+        if (payloadLength < 0)
+            throw new ArgumentOutOfRangeException(nameof(payloadLength), "Payload length cannot be negative.");
+
+        var manifestId = Guid.NewGuid();
+        return new JsonColdStoreWriteManifest(
+            manifestId,
+            DateTimeOffset.UtcNow,
+            targetPathSegments,
+            payloadLength,
+            JsonColdStoreRecordStore.GetStagedWritePathSegments(manifestId),
             JsonColdStoreManifestOperation.Write);
     }
 
@@ -503,7 +582,7 @@ internal sealed record JsonColdStoreWriteManifest(
             DateTimeOffset.UtcNow,
             targetPathSegments,
             0,
-            JsonColdStoreManifestOperation.Delete);
+            Operation: JsonColdStoreManifestOperation.Delete);
 }
 
 internal sealed record JsonColdStoreRecoveryResult(int CompletedManifests, int FailedManifests);

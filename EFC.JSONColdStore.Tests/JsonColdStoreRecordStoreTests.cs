@@ -34,6 +34,8 @@ public sealed class JsonColdStoreRecordStoreTests
         Assert.True(store.RecordExists("Consumer.Event", "1"));
         Assert.False(Directory.Exists(Path.Combine(root, "_transactions", "pending"))
             && Directory.GetFiles(Path.Combine(root, "_transactions", "pending"), "*.json").Length > 0);
+        Assert.False(Directory.Exists(Path.Combine(root, "_transactions", "staged"))
+            && Directory.GetFiles(Path.Combine(root, "_transactions", "staged"), "*.jcs").Length > 0);
     }
 
     [Fact]
@@ -271,6 +273,37 @@ public sealed class JsonColdStoreRecordStoreTests
     }
 
     [Fact]
+    public async Task RecoverPendingManifestsPublishesStagedWriteWhenTargetIsMissing()
+    {
+        var root = NewTempDirectory();
+        var options = new JsonColdStoreOptionsBuilder(root)
+            .UseCompression(JsonColdStoreCompression.None)
+            .UseFsyncOnWrite(false)
+            .Build();
+        var store = new JsonColdStoreRecordStore(options);
+        var targetSegments = JsonColdStoreRecordStore.GetRecordPathSegments("Entity", "staged");
+        var encodedPayload = JsonColdStorePayloadCodec.Encode("payload"u8, options);
+        var manifest = JsonColdStoreWriteManifest.CreateStagedWrite(
+            targetSegments,
+            encodedPayload.Length);
+        await JsonColdStoreAtomicFileWriter.WriteAsync(
+            root,
+            manifest.StagedPathSegments!,
+            encodedPayload,
+            fsync: false);
+        await WriteManifestAsync(root, manifest);
+
+        var result = await store.RecoverPendingManifestsAsync();
+        var read = await store.ReadRecordAsync("Entity", "staged");
+
+        Assert.Equal(1, result.CompletedManifests);
+        Assert.Equal(0, result.FailedManifests);
+        Assert.Equal("payload"u8.ToArray(), read);
+        Assert.False(File.Exists(ManifestPath(root, manifest.ManifestId)));
+        Assert.False(File.Exists(StagedPath(root, manifest.ManifestId)));
+    }
+
+    [Fact]
     public async Task RecoverPendingManifestsReadsProtectedManifest()
     {
         var root = NewTempDirectory();
@@ -425,6 +458,9 @@ public sealed class JsonColdStoreRecordStoreTests
 
     private static string ManifestPath(string root, Guid manifestId) =>
         Path.Combine(root, "_transactions", "pending", manifestId.ToString("N") + ".json");
+
+    private static string StagedPath(string root, Guid manifestId) =>
+        Path.Combine(root, "_transactions", "staged", manifestId.ToString("N") + ".jcs");
 
     private static async Task<string> ReadOnlyEventLogTextAsync(string root)
     {
