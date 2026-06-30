@@ -98,16 +98,38 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
     }
 
     [Fact]
-    public void EnsureCreatedCreatesRootMetadataOnce()
+    public void EnsureCreatedCreatesRootAndModelMetadataOnce()
     {
         var directory = TestDirectory("ensure-created-" + Guid.NewGuid().ToString("N"));
-        var builder = new DbContextOptionsBuilder<TestDbContext>();
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
         builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
-        using var context = new TestDbContext(builder.Options);
+        using var context = new WritableDbContext(builder.Options);
 
         Assert.True(context.Database.EnsureCreated());
         Assert.False(context.Database.EnsureCreated());
         Assert.True(File.Exists(Path.Combine(directory, "_store.json")));
+        Assert.True(File.Exists(Path.Combine(directory, "_model.json")));
+    }
+
+    [Fact]
+    public void EnsureCreatedRejectsChangedModelCatalog()
+    {
+        var directory = TestDirectory("ensure-created-catalog-mismatch-" + Guid.NewGuid().ToString("N"));
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+        using (var context = new WritableDbContext(builder.Options))
+        {
+            Assert.True(context.Database.EnsureCreated());
+        }
+
+        var changedBuilder = new DbContextOptionsBuilder<WritableDbContextWithoutIndex>();
+        changedBuilder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+        using var changedContext = new WritableDbContextWithoutIndex(changedBuilder.Options);
+
+        var exception = Assert.Throws<InvalidOperationException>(
+            () => changedContext.Database.EnsureCreated());
+
+        Assert.Contains("model catalog", exception.Message);
     }
 
     [Fact]

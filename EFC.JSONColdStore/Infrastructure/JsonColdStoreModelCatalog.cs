@@ -7,7 +7,7 @@ namespace EFC.JSONColdStore.Infrastructure;
 internal sealed class JsonColdStoreModelCatalog
 {
     private const int CurrentFormatVersion = 1;
-    private const string ModelFileName = "_model.json";
+    internal const string ModelFileName = "_model.json";
 
     private static readonly JsonSerializerOptions CatalogJsonOptions = new()
     {

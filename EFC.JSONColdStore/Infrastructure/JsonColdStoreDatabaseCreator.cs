@@ -7,12 +7,16 @@ namespace EFC.JSONColdStore.Infrastructure;
 internal sealed class JsonColdStoreDatabaseCreator : IDatabaseCreator
 {
     private readonly JsonColdStoreOptions _options;
+    private readonly ICurrentDbContext _currentDbContext;
 
-    public JsonColdStoreDatabaseCreator(IDbContextOptions contextOptions)
+    public JsonColdStoreDatabaseCreator(
+        IDbContextOptions contextOptions,
+        ICurrentDbContext currentDbContext)
     {
         ArgumentNullException.ThrowIfNull(contextOptions);
         _options = contextOptions.FindExtension<JsonColdStoreOptionsExtension>()?.Options
             ?? throw new InvalidOperationException("JSONColdStore options are not configured.");
+        _currentDbContext = currentDbContext ?? throw new ArgumentNullException(nameof(currentDbContext));
     }
 
     public bool EnsureDeleted() =>
@@ -27,29 +31,37 @@ internal sealed class JsonColdStoreDatabaseCreator : IDatabaseCreator
 
     public bool EnsureCreated()
     {
-        var storeFilePath = JsonColdStorePathValidator.GetSafeChildPath(
-            _options.DatabaseDirectory,
-            JsonColdStoreCatalog.StoreFileName);
-        var existed = File.Exists(storeFilePath);
-
-        new JsonColdStoreCatalog(_options)
-            .EnsureInitializedAsync()
+        return EnsureCreatedAsync()
             .GetAwaiter()
             .GetResult();
-
-        return !existed;
     }
 
-    public async Task<bool> EnsureCreatedAsync(CancellationToken cancellationToken = default)
+    public Task<bool> EnsureCreatedAsync(CancellationToken cancellationToken = default)
+    {
+        return EnsureCreatedInternalAsync(cancellationToken);
+    }
+
+    private async Task<bool> EnsureCreatedInternalAsync(CancellationToken cancellationToken)
     {
         var storeFilePath = JsonColdStorePathValidator.GetSafeChildPath(
             _options.DatabaseDirectory,
             JsonColdStoreCatalog.StoreFileName);
-        var existed = File.Exists(storeFilePath);
+        var modelFilePath = JsonColdStorePathValidator.GetSafeChildPath(
+            _options.DatabaseDirectory,
+            JsonColdStoreModelCatalog.ModelFileName);
+        var existed = File.Exists(storeFilePath) && File.Exists(modelFilePath);
 
-        await new JsonColdStoreCatalog(_options)
-            .EnsureInitializedAsync(cancellationToken)
-            .ConfigureAwait(false);
+        await using var session = await JsonColdStoreDatabaseSession.OpenAsync(
+            _options,
+            acquireWriterLock: true,
+            cancellationToken).ConfigureAwait(false);
+        var modelCatalog = new JsonColdStoreModelCatalog(
+            _options,
+            session.Metadata.Policy.EncryptionEnabled);
+        await modelCatalog.EnsureCompatibleAsync(
+            JsonColdStoreModelDescriptor.Create(_currentDbContext.Context.Model),
+            createIfMissing: true,
+            cancellationToken).ConfigureAwait(false);
 
         return !existed;
     }
