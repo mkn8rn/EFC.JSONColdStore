@@ -115,6 +115,67 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
     }
 
     [Fact]
+    public async Task EnsureDeletedAsyncRemovesCreatedStore()
+    {
+        var directory = TestDirectory("ensure-deleted-" + Guid.NewGuid().ToString("N"));
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+        using var context = new WritableDbContext(builder.Options);
+        context.Database.EnsureCreated();
+        await File.WriteAllTextAsync(Path.Combine(directory, "extra.tmp"), "delete me");
+
+        Assert.True(await context.Database.EnsureDeletedAsync());
+
+        Assert.False(Directory.Exists(directory));
+        Assert.False(await context.Database.EnsureDeletedAsync());
+    }
+
+    [Fact]
+    public void EnsureDeletedReturnsFalseForMissingDirectory()
+    {
+        var directory = TestDirectory("ensure-deleted-missing-" + Guid.NewGuid().ToString("N"));
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+        using var context = new WritableDbContext(builder.Options);
+
+        Assert.False(context.Database.EnsureDeleted());
+    }
+
+    [Fact]
+    public async Task EnsureDeletedAsyncHonorsCancellation()
+    {
+        var directory = TestDirectory("ensure-deleted-canceled-" + Guid.NewGuid().ToString("N"));
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+        using var context = new WritableDbContext(builder.Options);
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => context.Database.EnsureDeletedAsync(cts.Token));
+    }
+
+    [Fact]
+    public async Task EnsureDeletedRejectsActiveWriterLock()
+    {
+        var directory = TestDirectory("ensure-deleted-locked-" + Guid.NewGuid().ToString("N"));
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+        var storageOptions = new JsonColdStoreOptionsBuilder(directory)
+            .UseFsyncOnWrite(false)
+            .Build();
+        await using var session = await JsonColdStoreDatabaseSession.OpenAsync(storageOptions);
+        using var context = new WritableDbContext(builder.Options);
+
+        var exception = Assert.Throws<InvalidOperationException>(
+            () => context.Database.EnsureDeleted());
+
+        Assert.Contains("writer lock", exception.Message);
+        Assert.True(Directory.Exists(directory));
+        Assert.True(File.Exists(Path.Combine(directory, "_store.json")));
+    }
+
+    [Fact]
     public void EnsureCreatedRejectsChangedModelCatalog()
     {
         var directory = TestDirectory("ensure-created-catalog-mismatch-" + Guid.NewGuid().ToString("N"));

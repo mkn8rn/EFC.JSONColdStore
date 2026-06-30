@@ -19,14 +19,32 @@ internal sealed class JsonColdStoreDatabaseCreator : IDatabaseCreator
         _currentDbContext = currentDbContext ?? throw new ArgumentNullException(nameof(currentDbContext));
     }
 
-    public bool EnsureDeleted() =>
-        throw new NotSupportedException("JSONColdStore EnsureDeleted is not implemented.");
+    public bool EnsureDeleted()
+    {
+        return EnsureDeletedAsync()
+            .GetAwaiter()
+            .GetResult();
+    }
 
-    public Task<bool> EnsureDeletedAsync(CancellationToken cancellationToken = default)
+    public Task<bool> EnsureDeletedAsync(CancellationToken cancellationToken = default) =>
+        EnsureDeletedInternalAsync(cancellationToken);
+
+    private async Task<bool> EnsureDeletedInternalAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        return Task.FromException<bool>(
-            new NotSupportedException("JSONColdStore EnsureDeletedAsync is not implemented."));
+        var databaseDirectory = JsonColdStorePathValidator.GetSafeChildPath(_options.DatabaseDirectory);
+        if (!Directory.Exists(databaseDirectory))
+            return false;
+
+        var writerLock = await JsonColdStoreDatabaseLock.AcquireAsync(
+                _options,
+                cancellationToken)
+            .ConfigureAwait(false);
+        writerLock.Dispose();
+
+        cancellationToken.ThrowIfCancellationRequested();
+        Directory.Delete(databaseDirectory, recursive: true);
+        return true;
     }
 
     public bool EnsureCreated()
