@@ -187,6 +187,19 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
         Assert.Null(read);
     }
 
+    [Fact]
+    public void QueryThrowsClearUnsupportedMessageUntilQueryPipelineExists()
+    {
+        var directory = TestDirectory("query-unsupported-" + Guid.NewGuid().ToString("N"));
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+        using var context = new WritableDbContext(builder.Options);
+
+        var exception = Assert.Throws<NotSupportedException>(() => context.Entities.ToList());
+
+        Assert.Contains("LINQ query", exception.Message);
+    }
+
     private static string TestDirectory(string name) =>
         Path.Combine(Path.GetTempPath(), "jsoncoldstore-tests", name);
 
