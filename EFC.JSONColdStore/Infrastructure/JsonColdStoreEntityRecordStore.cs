@@ -172,6 +172,14 @@ internal sealed class JsonColdStoreEntityRecordStore
         var descriptor = _modelDescriptor.FindEntity(typeof(TEntity));
         var index = descriptor.FindSinglePropertyIndex(propertyName);
         await EnsureModelCatalogAsync(createIfMissing: false, cancellationToken);
+        if (!_indexStore.DocumentExists(descriptor.EntityName, index.StorageName)
+            && _session.Records.EntityHasRecords(descriptor.EntityName))
+        {
+            throw new InvalidOperationException(
+                $"The JSONColdStore index '{index.StorageName}' for entity '{descriptor.EntityName}' is missing. "
+                + "Rebuild JSONColdStore indexes before using this indexed read.");
+        }
+
         var recordIds = await _indexStore.ReadAllRecordIdsAsync(
             descriptor.EntityName,
             index.StorageName,

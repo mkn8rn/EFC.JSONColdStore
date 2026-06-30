@@ -1381,6 +1381,35 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
     }
 
     [Fact]
+    public async Task LinqRangeThrowsWhenDeclaredIndexFileIsMissing()
+    {
+        var directory = TestDirectory("query-range-missing-index-" + Guid.NewGuid().ToString("N"));
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+        using var context = new WritableDbContext(builder.Options);
+        context.Entities.Add(new WritableEntity
+        {
+            Id = Guid.Parse("83000000-0000-0000-0000-000000000008"),
+            Value = "range-missing-index",
+            Score = 50,
+        });
+        context.SaveChanges();
+        File.Delete(IndexPath(directory, "Score"));
+
+        var unavailable = Assert.Throws<InvalidOperationException>(
+            () => context.Entities.Where(entity => entity.Score >= 10).ToList());
+        var rebuilt = await context.Database.RebuildJsonColdStoreIndexesAsync();
+        var values = context.Entities
+            .Where(entity => entity.Score >= 10)
+            .Select(entity => entity.Value)
+            .ToList();
+
+        Assert.Contains("index", unavailable.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(1, rebuilt);
+        Assert.Equal(["range-missing-index"], values);
+    }
+
+    [Fact]
     public void LinqRangeThrowsWithoutDeclaredIndexByDefault()
     {
         var directory = TestDirectory("query-range-no-index-" + Guid.NewGuid().ToString("N"));
