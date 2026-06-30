@@ -1370,6 +1370,67 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
     }
 
     [Fact]
+    public async Task ReadJsonColdStoreAsyncRejectsLegacyPlainEntityWhenEncryptionIsRequired()
+    {
+        var directory = TestDirectory("legacy-plain-require-encrypted-" + Guid.NewGuid().ToString("N"));
+        using var key = JsonColdStoreEncryptionKey.FromBytes(Enumerable.Range(0, 32).Select(value => (byte)value).ToArray());
+        var id = Guid.Parse("70000000-0000-0000-0000-000000000012");
+        await WriteLegacyEntityAsync(directory, new WritableEntity
+        {
+            Id = id,
+            Value = "plain legacy rejected",
+        });
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(
+            directory,
+            store => store
+                .UseFsyncOnWrite(false)
+                .UseEncryption(new JsonColdStoreEncryptionOptions
+                {
+                    Key = key,
+                    RequireEncryptedStore = true,
+                }));
+
+        using var context = new WritableDbContext(builder.Options);
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => context.Database.ReadJsonColdStoreAsync<WritableEntity>(id));
+
+        Assert.Contains("requires encrypted legacy", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task ReadJsonColdStoreAsyncReadsLegacyEncryptedEntityWhenEncryptionIsRequired()
+    {
+        var directory = TestDirectory("legacy-encrypted-required-" + Guid.NewGuid().ToString("N"));
+        using var key = JsonColdStoreEncryptionKey.FromBytes(Enumerable.Range(0, 32).Select(value => (byte)value).ToArray());
+        var id = Guid.Parse("70000000-0000-0000-0000-000000000013");
+        await WriteLegacyEntityAsync(
+            directory,
+            new WritableEntity
+            {
+                Id = id,
+                Value = "encrypted legacy required",
+            },
+            key);
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(
+            directory,
+            store => store
+                .UseFsyncOnWrite(false)
+                .UseEncryption(new JsonColdStoreEncryptionOptions
+                {
+                    Key = key,
+                    RequireEncryptedStore = true,
+                }));
+
+        using var context = new WritableDbContext(builder.Options);
+        var read = await context.Database.ReadJsonColdStoreAsync<WritableEntity>(id);
+
+        Assert.NotNull(read);
+        Assert.Equal("encrypted legacy required", read.Value);
+    }
+
+    [Fact]
     public async Task ReadJsonColdStoreIndexAsyncUsesLegacyIndexShard()
     {
         var directory = TestDirectory("legacy-index-" + Guid.NewGuid().ToString("N"));

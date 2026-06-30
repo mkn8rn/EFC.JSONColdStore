@@ -227,6 +227,12 @@ internal sealed class JsonColdStoreLegacyRecordStore
         }
         else
         {
+            if (_options.Encryption?.RequireEncryptedStore == true)
+            {
+                throw new InvalidOperationException(
+                    "The store requires encrypted legacy JSON payloads.");
+            }
+
             plaintext = bytes.ToArray();
         }
 
