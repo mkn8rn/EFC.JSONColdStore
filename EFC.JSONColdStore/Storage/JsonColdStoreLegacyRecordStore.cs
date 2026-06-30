@@ -29,6 +29,8 @@ internal sealed class JsonColdStoreLegacyRecordStore
     internal bool RecordExists(JsonColdStoreEntityDescriptor descriptor, string recordId)
     {
         ArgumentNullException.ThrowIfNull(descriptor);
+        if (!IsSafeLegacyRecordId(recordId))
+            return false;
 
         return File.Exists(GetRecordPath(descriptor, recordId));
     }
@@ -39,6 +41,7 @@ internal sealed class JsonColdStoreLegacyRecordStore
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(descriptor);
+        ValidateLegacyRecordId(recordId);
 
         var bytes = await JsonColdStoreFileReader.ReadAllBytesAsync(
             _options,
@@ -115,7 +118,7 @@ internal sealed class JsonColdStoreLegacyRecordStore
         }
 
         if (shard is not null && shard.TryGetValue(indexKey, out var recordIds))
-            return JsonColdStoreLegacyIndexLookup.FromIndex(recordIds);
+            return CreateLookupFromIndex(recordIds);
 
         return JsonColdStoreLegacyIndexLookup.FallbackToScan;
     }
@@ -123,6 +126,8 @@ internal sealed class JsonColdStoreLegacyRecordStore
     internal void DeleteRecordIfExists(JsonColdStoreEntityDescriptor descriptor, string recordId)
     {
         ArgumentNullException.ThrowIfNull(descriptor);
+        if (!IsSafeLegacyRecordId(recordId))
+            return;
 
         var recordPath = GetRecordPath(descriptor, recordId);
         if (File.Exists(recordPath))
@@ -167,7 +172,7 @@ internal sealed class JsonColdStoreLegacyRecordStore
             return JsonColdStoreLegacyIndexLookup.FallbackToScan;
         }
 
-        return JsonColdStoreLegacyIndexLookup.FromIndex(recordIds ?? []);
+        return CreateLookupFromIndex(recordIds ?? []);
     }
 
     private static bool IsRecoverableLegacyIndexReadFailure(Exception exception) =>
@@ -175,6 +180,40 @@ internal sealed class JsonColdStoreLegacyRecordStore
             or UnauthorizedAccessException
             or JsonException
             or InvalidDataException;
+
+    private static JsonColdStoreLegacyIndexLookup CreateLookupFromIndex(IEnumerable<string> recordIds)
+    {
+        var safeRecordIds = new List<string>();
+        foreach (var recordId in recordIds)
+        {
+            if (!IsSafeLegacyRecordId(recordId))
+                return JsonColdStoreLegacyIndexLookup.FallbackToScan;
+
+            safeRecordIds.Add(recordId);
+        }
+
+        return JsonColdStoreLegacyIndexLookup.FromIndex(safeRecordIds);
+    }
+
+    private static void ValidateLegacyRecordId(string recordId)
+    {
+        if (!IsSafeLegacyRecordId(recordId))
+            throw new InvalidDataException("The legacy JSONColdStore record id is not a safe file name.");
+    }
+
+    private static bool IsSafeLegacyRecordId(string? recordId)
+    {
+        if (string.IsNullOrWhiteSpace(recordId))
+            return false;
+        if (recordId.StartsWith('_'))
+            return false;
+        if (recordId.Contains('\\') || recordId.Contains('/'))
+            return false;
+        if (recordId.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+            return false;
+
+        return string.Equals(Path.GetFileName(recordId), recordId, StringComparison.Ordinal);
+    }
 
     private byte[] Decode(ReadOnlySpan<byte> bytes)
     {

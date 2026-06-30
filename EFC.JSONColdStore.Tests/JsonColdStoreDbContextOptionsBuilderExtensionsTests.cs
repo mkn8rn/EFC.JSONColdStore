@@ -1435,6 +1435,45 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
     }
 
     [Fact]
+    public async Task ReadJsonColdStoreIndexAsyncRejectsUnsafeLegacyIndexRecordIds()
+    {
+        var directory = TestDirectory("legacy-unsafe-index-record-id-" + Guid.NewGuid().ToString("N"));
+        var matchId = Guid.Parse("70000000-0000-0000-0000-000000000010");
+        var escapedId = Guid.Parse("70000000-0000-0000-0000-000000000011");
+        await WriteLegacyEntityAsync(directory, new WritableEntity
+        {
+            Id = matchId,
+            Value = "unsafe-index-match",
+        });
+        var escapedDirectory = Path.Combine(directory, "OtherEntity");
+        Directory.CreateDirectory(escapedDirectory);
+        await File.WriteAllTextAsync(
+            Path.Combine(escapedDirectory, "secret.json"),
+            JsonSerializer.Serialize(
+                new WritableEntity
+                {
+                    Id = escapedId,
+                    Value = "unsafe-index-match",
+                },
+                new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }));
+        await WriteLegacyIndexAsync(
+            directory,
+            "Value",
+            "unsafe-index-match",
+            [Path.Combine("..", "OtherEntity", "secret")]);
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+
+        using var context = new WritableDbContext(builder.Options);
+        var matches = await context.Database.ReadJsonColdStoreIndexAsync<WritableEntity>(
+            "Value",
+            "unsafe-index-match");
+
+        Assert.Single(matches);
+        Assert.Equal(matchId, matches[0].Id);
+    }
+
+    [Fact]
     public async Task SaveChangesRetiresSameKeyLegacyRecordAfterNewFormatWrite()
     {
         var directory = TestDirectory("legacy-retire-" + Guid.NewGuid().ToString("N"));
