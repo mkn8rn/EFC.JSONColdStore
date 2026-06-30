@@ -14,6 +14,10 @@ internal static class JsonColdStoreQueryExecutor
         typeof(JsonColdStoreQueryExecutor)
             .GetMethod(nameof(ExecuteTyped), BindingFlags.NonPublic | BindingFlags.Static)
         ?? throw new InvalidOperationException("The JSONColdStore query executor is misconfigured.");
+    private static readonly MethodInfo CreateSequenceListMethod =
+        typeof(JsonColdStoreQueryExecutor)
+            .GetMethod(nameof(CreateSequenceList), BindingFlags.NonPublic | BindingFlags.Static)
+        ?? throw new InvalidOperationException("The JSONColdStore query executor is misconfigured.");
     private static readonly MethodInfo ExecuteAsyncEnumerableMethod =
         typeof(JsonColdStoreQueryExecutor)
             .GetMethod(nameof(ExecuteAsyncEnumerable), BindingFlags.NonPublic | BindingFlags.Static)
@@ -50,7 +54,7 @@ internal static class JsonColdStoreQueryExecutor
         try
         {
             var result = ExecuteTypedMethod
-                .MakeGenericMethod(plan.EntityType)
+                .MakeGenericMethod(plan.EntityType, typeof(TResult))
                 .Invoke(null, [currentOptions, queryContext, plan]);
             return (TResult)result!;
         }
@@ -71,7 +75,7 @@ internal static class JsonColdStoreQueryExecutor
         {
             var entityType = resultType.GetGenericArguments()[0];
             return ExecuteAsyncEnumerableMethod
-                .MakeGenericMethod(entityType)
+                .MakeGenericMethod(plan.EntityType, entityType)
                 .Invoke(null, [options, queryContext, plan, CancellationToken.None])!;
         }
 
@@ -87,7 +91,7 @@ internal static class JsonColdStoreQueryExecutor
         throw Unsupported("The async LINQ query result shape is not supported.");
     }
 
-    private static object? ExecuteTyped<TEntity>(
+    private static object? ExecuteTyped<TEntity, TResult>(
         JsonColdStoreOptions options,
         QueryContext queryContext,
         JsonColdStoreQueryPlan plan)
@@ -101,10 +105,12 @@ internal static class JsonColdStoreQueryExecutor
             .GetAwaiter()
             .GetResult();
 
-        return ApplyTerminal(results, plan.Terminal);
+        return plan.Terminal == JsonColdStoreQueryTerminal.Sequence
+            ? CreateSequenceResult<TEntity, TResult>(results, queryContext, plan)
+            : ApplyTerminal<TEntity, TResult>(results, queryContext, plan);
     }
 
-    private static async IAsyncEnumerable<TEntity> ExecuteAsyncEnumerable<TEntity>(
+    private static async IAsyncEnumerable<TElement> ExecuteAsyncEnumerable<TEntity, TElement>(
         JsonColdStoreOptions options,
         QueryContext queryContext,
         JsonColdStoreQueryPlan plan,
@@ -120,8 +126,9 @@ internal static class JsonColdStoreQueryExecutor
                 plan,
                 effectiveCancellationToken)
             .ConfigureAwait(false);
+        var projected = CreateSequenceList<TEntity, TElement>(results, queryContext, plan);
 
-        foreach (var entity in results)
+        foreach (var entity in projected)
         {
             effectiveCancellationToken.ThrowIfCancellationRequested();
             yield return entity;
@@ -140,7 +147,7 @@ internal static class JsonColdStoreQueryExecutor
                 plan,
                 queryContext.CancellationToken)
             .ConfigureAwait(false);
-        var terminal = ApplyTerminal(results, plan.Terminal);
+        var terminal = ApplyTerminal<TEntity, TTerminal>(results, queryContext, plan);
         return (TTerminal)terminal!;
     }
 
@@ -170,14 +177,78 @@ internal static class JsonColdStoreQueryExecutor
         var predicates = plan.Filters
             .Select(filter => CreatePredicate<TEntity>(queryContext, filter))
             .ToArray();
-
-        return candidates
+        var filtered = candidates
             .Where(entity => predicates.All(predicate => predicate(entity)))
             .ToList();
+
+        ApplyOrdering(filtered, queryContext, plan);
+        ApplyPaging(filtered, queryContext, plan);
+        return filtered;
     }
 
-    private static object? ApplyTerminal<TEntity>(
+    private static object? CreateSequenceResult<TEntity, TResult>(
         List<TEntity> results,
+        QueryContext queryContext,
+        JsonColdStoreQueryPlan plan)
+        where TEntity : class
+    {
+        var elementType = TryGetSequenceElementType(typeof(TResult))
+            ?? throw Unsupported("The LINQ sequence result shape is not supported.");
+
+        return CreateSequenceListMethod
+            .MakeGenericMethod(typeof(TEntity), elementType)
+            .Invoke(null, [results, queryContext, plan]);
+    }
+
+    private static List<TElement> CreateSequenceList<TEntity, TElement>(
+        List<TEntity> results,
+        QueryContext queryContext,
+        JsonColdStoreQueryPlan plan)
+        where TEntity : class
+    {
+        if (plan.Projection is null)
+        {
+            if (!typeof(TElement).IsAssignableFrom(typeof(TEntity)))
+                throw Unsupported("The LINQ sequence result element type does not match the entity type.");
+
+            return results.Cast<TElement>().ToList();
+        }
+
+        var projector = CreateProjection<TEntity, TElement>(queryContext, plan.Projection);
+        return results.Select(projector).ToList();
+    }
+
+    private static object? ApplyTerminal<TEntity, TTerminal>(
+        List<TEntity> results,
+        QueryContext queryContext,
+        JsonColdStoreQueryPlan plan)
+        where TEntity : class
+    {
+        if (plan.Terminal is JsonColdStoreQueryTerminal.Count
+            or JsonColdStoreQueryTerminal.LongCount
+            or JsonColdStoreQueryTerminal.Any)
+        {
+            return plan.Terminal switch
+            {
+                JsonColdStoreQueryTerminal.Count => results.Count,
+                JsonColdStoreQueryTerminal.LongCount => (long)results.Count,
+                JsonColdStoreQueryTerminal.Any => results.Count > 0,
+                _ => throw Unsupported("The LINQ query terminal is not supported."),
+            };
+        }
+
+        if (plan.Projection is not null)
+        {
+            var projected = CreateSequenceList<TEntity, TTerminal>(results, queryContext, plan);
+            return ApplyTerminal(projected, plan.Terminal);
+        }
+
+        var entities = results.Cast<TTerminal>().ToList();
+        return ApplyTerminal(entities, plan.Terminal);
+    }
+
+    private static object? ApplyTerminal<TElement>(
+        List<TElement> results,
         JsonColdStoreQueryTerminal terminal)
     {
         return terminal switch
@@ -187,11 +258,116 @@ internal static class JsonColdStoreQueryExecutor
             JsonColdStoreQueryTerminal.FirstOrDefault => results.FirstOrDefault(),
             JsonColdStoreQueryTerminal.Single => results.Single(),
             JsonColdStoreQueryTerminal.SingleOrDefault => results.SingleOrDefault(),
-            JsonColdStoreQueryTerminal.Count => results.Count,
-            JsonColdStoreQueryTerminal.LongCount => (long)results.Count,
-            JsonColdStoreQueryTerminal.Any => results.Count > 0,
             _ => throw Unsupported("The LINQ query terminal is not supported."),
         };
+    }
+
+    private static Type? TryGetSequenceElementType(Type resultType)
+    {
+        if (resultType.IsGenericType)
+        {
+            var genericDefinition = resultType.GetGenericTypeDefinition();
+            if (genericDefinition == typeof(IEnumerable<>)
+                || genericDefinition == typeof(List<>)
+                || genericDefinition == typeof(IReadOnlyList<>))
+            {
+                return resultType.GetGenericArguments()[0];
+            }
+        }
+
+        return resultType.GetInterfaces()
+            .Where(type => type.IsGenericType && type.GetGenericTypeDefinition() == typeof(IEnumerable<>))
+            .Select(type => type.GetGenericArguments()[0])
+            .FirstOrDefault();
+    }
+
+    private static void ApplyOrdering<TEntity>(
+        List<TEntity> results,
+        QueryContext queryContext,
+        JsonColdStoreQueryPlan plan)
+        where TEntity : class
+    {
+        IOrderedEnumerable<TEntity>? ordered = null;
+        foreach (var ordering in plan.Orderings)
+        {
+            var selector = CreateKeySelector<TEntity>(queryContext, ordering.KeySelector);
+            ordered = ordered is null
+                ? ordering.Descending
+                    ? results.OrderByDescending(selector)
+                    : results.OrderBy(selector)
+                : ordering.Descending
+                    ? ordered.ThenByDescending(selector)
+                    : ordered.ThenBy(selector);
+        }
+
+        if (ordered is null)
+            return;
+
+        var orderedResults = ordered.ToList();
+        results.Clear();
+        results.AddRange(orderedResults);
+    }
+
+    private static void ApplyPaging<TEntity>(
+        List<TEntity> results,
+        QueryContext queryContext,
+        JsonColdStoreQueryPlan plan)
+    {
+        if (plan.Skip is null && plan.Take is null)
+            return;
+
+        IEnumerable<TEntity> paged = results;
+        if (plan.Skip is not null)
+            paged = paged.Skip(EvaluateNonNegativeInt(queryContext, plan.Skip, "Skip"));
+        if (plan.Take is not null)
+            paged = paged.Take(EvaluateNonNegativeInt(queryContext, plan.Take, "Take"));
+
+        var pagedResults = paged.ToList();
+        results.Clear();
+        results.AddRange(pagedResults);
+    }
+
+    private static int EvaluateNonNegativeInt(
+        QueryContext queryContext,
+        Expression expression,
+        string operatorName)
+    {
+        var value = Convert.ToInt32(Evaluate(queryContext, expression), CultureInfo.InvariantCulture);
+        if (value < 0)
+            throw new ArgumentOutOfRangeException(operatorName, $"{operatorName} cannot be negative.");
+
+        return value;
+    }
+
+    private static Func<TEntity, object?> CreateKeySelector<TEntity>(
+        QueryContext queryContext,
+        LambdaExpression keySelector)
+        where TEntity : class =>
+        CompileLambda<TEntity, object?>(queryContext, keySelector);
+
+    private static Func<TEntity, TElement> CreateProjection<TEntity, TElement>(
+        QueryContext queryContext,
+        LambdaExpression projection)
+        where TEntity : class =>
+        CompileLambda<TEntity, TElement>(queryContext, projection);
+
+    private static Func<TEntity, TResult> CompileLambda<TEntity, TResult>(
+        QueryContext queryContext,
+        LambdaExpression expression)
+        where TEntity : class
+    {
+        if (expression.Parameters.Count != 1)
+            throw Unsupported("Only single-input LINQ lambdas are supported.");
+
+        var body = new QueryParameterBindingVisitor(queryContext).Visit(expression.Body)
+            ?? throw Unsupported("The LINQ expression body is not supported.");
+        if (body.Type != typeof(TResult))
+            body = Expression.Convert(body, typeof(TResult));
+
+        var lambda = Expression.Lambda<Func<TEntity, TResult>>(
+            body,
+            (ParameterExpression)expression.Parameters[0]);
+        return lambda.Compile();
     }
 
     private static async Task<List<TEntity>> ReadCandidatesAsync<TEntity>(
@@ -254,7 +430,7 @@ internal static class JsonColdStoreQueryExecutor
             return entity => ValuesEqual(property.GetValue(entity), seek.Value);
         }
 
-        return (Func<TEntity, bool>)filter.Compile();
+        return CompileLambda<TEntity, bool>(queryContext, filter);
     }
 
     private static bool ValuesEqual(object? left, object? right)
@@ -334,6 +510,20 @@ internal static class JsonColdStoreQueryExecutor
         return expression;
     }
 
+    private sealed class QueryParameterBindingVisitor(QueryContext queryContext) : ExpressionVisitor
+    {
+        protected override Expression VisitExtension(Expression node)
+        {
+            if (node is QueryParameterExpression parameter)
+            {
+                var value = queryContext.Parameters[parameter.Name];
+                return Expression.Constant(value, node.Type);
+            }
+
+            return base.VisitExtension(node);
+        }
+    }
+
     private static NotSupportedException Unsupported(string message) =>
         new("JSONColdStore EF provider support is incomplete: " + message);
 }
@@ -341,6 +531,10 @@ internal static class JsonColdStoreQueryExecutor
 internal sealed record JsonColdStoreQueryPlan(
     Type EntityType,
     IReadOnlyList<LambdaExpression> Filters,
+    IReadOnlyList<JsonColdStoreQueryOrdering> Orderings,
+    Expression? Skip,
+    Expression? Take,
+    LambdaExpression? Projection,
     JsonColdStoreQueryTerminal Terminal)
 {
     internal static JsonColdStoreQueryPlan Create(Expression query)
@@ -349,6 +543,10 @@ internal sealed record JsonColdStoreQueryPlan(
         return new JsonColdStoreQueryPlan(
             builder.EntityType,
             builder.Filters,
+            builder.Orderings,
+            builder.Skip,
+            builder.Take,
+            builder.Projection,
             builder.Terminal);
     }
 
@@ -366,7 +564,57 @@ internal sealed record JsonColdStoreQueryPlan(
             case nameof(Queryable.Where):
             {
                 var builder = Parse(call.Arguments[0]);
+                if (builder.Projection is not null)
+                    throw Unsupported("Filtering after projection is not supported.");
+
                 builder.Filters.Add(UnquoteLambda(call.Arguments[1]));
+                return builder;
+            }
+
+            case nameof(Queryable.OrderBy):
+            case nameof(Queryable.OrderByDescending):
+            case nameof(Queryable.ThenBy):
+            case nameof(Queryable.ThenByDescending):
+            {
+                var builder = Parse(call.Arguments[0]);
+                if (builder.Projection is not null)
+                    throw Unsupported("Ordering after projection is not supported.");
+                if (builder.Skip is not null || builder.Take is not null)
+                    throw Unsupported("Ordering after paging is not supported.");
+
+                builder.Orderings.Add(new JsonColdStoreQueryOrdering(
+                    UnquoteLambda(call.Arguments[1]),
+                    methodName is nameof(Queryable.OrderByDescending) or nameof(Queryable.ThenByDescending)));
+                return builder;
+            }
+
+            case nameof(Queryable.Skip):
+            {
+                var builder = Parse(call.Arguments[0]);
+                if (builder.Skip is not null)
+                    throw Unsupported("Only one Skip operator is supported.");
+
+                builder.Skip = call.Arguments[1];
+                return builder;
+            }
+
+            case nameof(Queryable.Take):
+            {
+                var builder = Parse(call.Arguments[0]);
+                if (builder.Take is not null)
+                    throw Unsupported("Only one Take operator is supported.");
+
+                builder.Take = call.Arguments[1];
+                return builder;
+            }
+
+            case nameof(Queryable.Select):
+            {
+                var builder = Parse(call.Arguments[0]);
+                if (builder.Projection is not null)
+                    throw Unsupported("Only one projection operator is supported.");
+
+                builder.Projection = UnquoteLambda(call.Arguments[1]);
                 return builder;
             }
 
@@ -380,7 +628,12 @@ internal sealed record JsonColdStoreQueryPlan(
             {
                 var builder = Parse(call.Arguments[0]);
                 if (call.Arguments.Count == 2)
+                {
+                    if (builder.Projection is not null)
+                        throw Unsupported("Predicate terminals after projection are not supported.");
+
                     builder.Filters.Add(UnquoteLambda(call.Arguments[1]));
+                }
 
                 builder.Terminal = methodName switch
                 {
@@ -421,8 +674,18 @@ internal sealed class JsonColdStoreQueryPlanBuilder(Type entityType)
 
     internal List<LambdaExpression> Filters { get; } = [];
 
+    internal List<JsonColdStoreQueryOrdering> Orderings { get; } = [];
+
+    internal Expression? Skip { get; set; }
+
+    internal Expression? Take { get; set; }
+
+    internal LambdaExpression? Projection { get; set; }
+
     internal JsonColdStoreQueryTerminal Terminal { get; set; } = JsonColdStoreQueryTerminal.Sequence;
 }
+
+internal sealed record JsonColdStoreQueryOrdering(LambdaExpression KeySelector, bool Descending);
 
 internal sealed record JsonColdStoreQuerySeek(string PropertyName, object? Value);
 

@@ -838,6 +838,156 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
         Assert.Contains("full scan", exception.Message);
     }
 
+    [Fact]
+    public void LinqProjectionOrdersPagesAndScansWhenSilentScansAreAllowed()
+    {
+        var directory = TestDirectory("query-projection-page-" + Guid.NewGuid().ToString("N"));
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(
+            directory,
+            store => store
+                .UseFsyncOnWrite(false)
+                .UseFullScanPolicy(JsonColdStoreScanPolicy.AllowSilentScans));
+        using var context = new WritableDbContext(builder.Options);
+        context.Entities.AddRange(
+            new WritableEntity
+            {
+                Id = Guid.Parse("82000000-0000-0000-0000-000000000001"),
+                Value = "b",
+            },
+            new WritableEntity
+            {
+                Id = Guid.Parse("82000000-0000-0000-0000-000000000002"),
+                Value = "a",
+            },
+            new WritableEntity
+            {
+                Id = Guid.Parse("82000000-0000-0000-0000-000000000003"),
+                Value = "c",
+            });
+        context.SaveChanges();
+
+        var values = context.Entities
+            .OrderBy(entity => entity.Value)
+            .Skip(1)
+            .Take(1)
+            .Select(entity => entity.Value)
+            .ToList();
+
+        Assert.Equal(["b"], values);
+    }
+
+    [Fact]
+    public void LinqProjectionUsesDeclaredIndexWithoutSilentScan()
+    {
+        var directory = TestDirectory("query-projection-index-" + Guid.NewGuid().ToString("N"));
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+        using var context = new WritableDbContext(builder.Options);
+        var id = Guid.Parse("82000000-0000-0000-0000-000000000004");
+        context.Entities.AddRange(
+            new WritableEntity
+            {
+                Id = id,
+                Value = "match",
+            },
+            new WritableEntity
+            {
+                Id = Guid.Parse("82000000-0000-0000-0000-000000000005"),
+                Value = "skip",
+            });
+        context.SaveChanges();
+
+        var read = context.Entities
+            .Where(entity => entity.Value == "match")
+            .Select(entity => entity.Id)
+            .Single();
+
+        Assert.Equal(id, read);
+    }
+
+    [Fact]
+    public async Task LinqProjectionToListAsyncUsesDeclaredIndexWithoutSilentScan()
+    {
+        var directory = TestDirectory("query-async-projection-index-" + Guid.NewGuid().ToString("N"));
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+        using var context = new WritableDbContext(builder.Options);
+        var id = Guid.Parse("82000000-0000-0000-0000-000000000006");
+        context.Entities.AddRange(
+            new WritableEntity
+            {
+                Id = id,
+                Value = "async-match",
+            },
+            new WritableEntity
+            {
+                Id = Guid.Parse("82000000-0000-0000-0000-000000000007"),
+                Value = "skip",
+            });
+        context.SaveChanges();
+
+        var reads = await context.Entities
+            .Where(entity => entity.Value == "async-match")
+            .Select(entity => entity.Id)
+            .ToListAsync();
+
+        Assert.Equal([id], reads);
+    }
+
+    [Fact]
+    public void LinqOrderingAppliesToIndexedResults()
+    {
+        var directory = TestDirectory("query-index-ordering-" + Guid.NewGuid().ToString("N"));
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+        using var context = new WritableDbContext(builder.Options);
+        context.Entities.AddRange(
+            new WritableEntity
+            {
+                Id = Guid.Parse("82000000-0000-0000-0000-000000000008"),
+                Value = "group",
+            },
+            new WritableEntity
+            {
+                Id = Guid.Parse("82000000-0000-0000-0000-000000000009"),
+                Value = "group",
+            },
+            new WritableEntity
+            {
+                Id = Guid.Parse("82000000-0000-0000-0000-000000000010"),
+                Value = "skip",
+            });
+        context.SaveChanges();
+
+        var ids = context.Entities
+            .Where(entity => entity.Value == "group")
+            .OrderByDescending(entity => entity.Id)
+            .Select(entity => entity.Id)
+            .ToList();
+
+        Assert.Equal(
+            [
+                Guid.Parse("82000000-0000-0000-0000-000000000009"),
+                Guid.Parse("82000000-0000-0000-0000-000000000008"),
+            ],
+            ids);
+    }
+
+    [Fact]
+    public void LinqProjectionStillThrowsWhenFullScanWouldBeRequiredByDefault()
+    {
+        var directory = TestDirectory("query-projection-unsupported-" + Guid.NewGuid().ToString("N"));
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+        using var context = new WritableDbContext(builder.Options);
+
+        var exception = Assert.Throws<NotSupportedException>(
+            () => context.Entities.Select(entity => entity.Value).ToList());
+
+        Assert.Contains("full scan", exception.Message);
+    }
+
     private static string TestDirectory(string name) =>
         Path.Combine(Path.GetTempPath(), "jsoncoldstore-tests", name);
 
