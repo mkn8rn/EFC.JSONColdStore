@@ -44,6 +44,108 @@ public sealed class JsonColdStoreEntityRecordStoreTests
     }
 
     [Fact]
+    public async Task WriteEntityAsyncCreatesModelCatalog()
+    {
+        var root = NewTempDirectory();
+        var options = new JsonColdStoreOptionsBuilder(root)
+            .UseFsyncOnWrite(false)
+            .Build();
+        await using var session = await JsonColdStoreDatabaseSession.OpenAsync(options);
+        var entityStore = new JsonColdStoreEntityRecordStore(
+            session,
+            JsonColdStoreModelDescriptor.Create(CreateModel()));
+
+        await entityStore.WriteEntityAsync(new ConsumerEvent
+        {
+            Id = Guid.Parse("70000000-0000-0000-0000-000000000001"),
+            ConsumerId = "catalog",
+            Payload = "value",
+        });
+
+        var catalogPath = Path.Combine(root, "_model.json");
+        Assert.True(File.Exists(catalogPath));
+        var catalogJson = await File.ReadAllTextAsync(catalogPath);
+        Assert.Contains("\"modelHash\"", catalogJson);
+        Assert.Contains(nameof(ConsumerEvent.ConsumerId), catalogJson);
+    }
+
+    [Fact]
+    public async Task ReadEntityAsyncRejectsChangedModelCatalog()
+    {
+        var root = NewTempDirectory();
+        var options = new JsonColdStoreOptionsBuilder(root)
+            .UseFsyncOnWrite(false)
+            .Build();
+        var entity = new ConsumerEvent
+        {
+            Id = Guid.Parse("71000000-0000-0000-0000-000000000001"),
+            ConsumerId = "catalog-mismatch",
+            Payload = "value",
+        };
+
+        await using (var session = await JsonColdStoreDatabaseSession.OpenAsync(options))
+        {
+            var entityStore = new JsonColdStoreEntityRecordStore(
+                session,
+                JsonColdStoreModelDescriptor.Create(CreateModel()));
+            await entityStore.WriteEntityAsync(entity);
+        }
+
+        await using (var session = await JsonColdStoreDatabaseSession.OpenAsync(options))
+        {
+            var entityStore = new JsonColdStoreEntityRecordStore(
+                session,
+                JsonColdStoreModelDescriptor.Create(CreateModelWithoutIndexes()));
+
+            var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => entityStore.ReadEntityAsync<ConsumerEvent>(entity.Id));
+
+            Assert.Contains("model catalog", exception.Message);
+        }
+    }
+
+    [Fact]
+    public async Task ReadEntityAsyncRejectsTamperedModelCatalog()
+    {
+        var root = NewTempDirectory();
+        var options = new JsonColdStoreOptionsBuilder(root)
+            .UseFsyncOnWrite(false)
+            .Build();
+        var entity = new ConsumerEvent
+        {
+            Id = Guid.Parse("72000000-0000-0000-0000-000000000001"),
+            ConsumerId = "catalog-tamper",
+            Payload = "value",
+        };
+
+        await using (var session = await JsonColdStoreDatabaseSession.OpenAsync(options))
+        {
+            var entityStore = new JsonColdStoreEntityRecordStore(
+                session,
+                JsonColdStoreModelDescriptor.Create(CreateModel()));
+            await entityStore.WriteEntityAsync(entity);
+        }
+
+        var catalogPath = Path.Combine(root, "_model.json");
+        var catalogJson = await File.ReadAllTextAsync(catalogPath);
+        await File.WriteAllTextAsync(
+            catalogPath,
+            catalogJson.Replace(nameof(ConsumerEvent.ConsumerId), "TamperedConsumerId", StringComparison.Ordinal));
+
+        await using (var session = await JsonColdStoreDatabaseSession.OpenAsync(options))
+        {
+            var entityStore = new JsonColdStoreEntityRecordStore(
+                session,
+                JsonColdStoreModelDescriptor.Create(CreateModel()));
+
+            var exception = await Assert.ThrowsAsync<InvalidDataException>(
+                () => entityStore.ReadEntityAsync<ConsumerEvent>(entity.Id));
+
+            Assert.Contains("hash", exception.Message);
+        }
+    }
+
+    [Fact]
     public async Task WriteEntityAsyncMaintainsDeclaredIndex()
     {
         var root = NewTempDirectory();
@@ -216,6 +318,14 @@ public sealed class JsonColdStoreEntityRecordStoreTests
             entity.HasKey(value => value.Id);
             entity.HasIndex(value => value.ConsumerId);
         });
+
+        return modelBuilder.FinalizeModel();
+    }
+
+    private static IModel CreateModelWithoutIndexes()
+    {
+        var modelBuilder = new ModelBuilder(new ConventionSet());
+        modelBuilder.Entity<ConsumerEvent>(entity => entity.HasKey(value => value.Id));
 
         return modelBuilder.FinalizeModel();
     }

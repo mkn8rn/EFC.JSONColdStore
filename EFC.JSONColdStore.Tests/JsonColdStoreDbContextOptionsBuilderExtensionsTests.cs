@@ -188,6 +188,37 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
     }
 
     [Fact]
+    public void SaveChangesRejectsChangedModelCatalog()
+    {
+        var directory = TestDirectory("savechanges-catalog-mismatch-" + Guid.NewGuid().ToString("N"));
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+
+        using (var context = new WritableDbContext(builder.Options))
+        {
+            context.Entities.Add(new WritableEntity
+            {
+                Id = Guid.Parse("60000000-0000-0000-0000-000000000001"),
+                Value = "first shape",
+            });
+            context.SaveChanges();
+        }
+
+        var changedBuilder = new DbContextOptionsBuilder<WritableDbContextWithoutIndex>();
+        changedBuilder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+        using var changedContext = new WritableDbContextWithoutIndex(changedBuilder.Options);
+        changedContext.Entities.Add(new WritableEntity
+        {
+            Id = Guid.Parse("60000000-0000-0000-0000-000000000002"),
+            Value = "changed shape",
+        });
+
+        var exception = Assert.Throws<InvalidOperationException>(() => changedContext.SaveChanges());
+
+        Assert.Contains("model catalog", exception.Message);
+    }
+
+    [Fact]
     public async Task ReadJsonColdStoreAsyncReadsSavedEntityByPrimaryKey()
     {
         var directory = TestDirectory("facade-read-" + Guid.NewGuid().ToString("N"));
@@ -353,7 +384,11 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
     private static Microsoft.EntityFrameworkCore.Metadata.IModel CreateWritableModel()
     {
         var modelBuilder = new ModelBuilder(new Microsoft.EntityFrameworkCore.Metadata.Conventions.ConventionSet());
-        modelBuilder.Entity<WritableEntity>(entity => entity.HasKey(value => value.Id));
+        modelBuilder.Entity<WritableEntity>(entity =>
+        {
+            entity.HasKey(value => value.Id);
+            entity.HasIndex(value => value.Value);
+        });
         return modelBuilder.FinalizeModel();
     }
 
@@ -368,6 +403,17 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
                 entity.HasKey(value => value.Id);
                 entity.HasIndex(value => value.Value);
             });
+        }
+    }
+
+    private sealed class WritableDbContextWithoutIndex(DbContextOptions<WritableDbContextWithoutIndex> options)
+        : DbContext(options)
+    {
+        public DbSet<WritableEntity> Entities => Set<WritableEntity>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<WritableEntity>(entity => entity.HasKey(value => value.Id));
         }
     }
 

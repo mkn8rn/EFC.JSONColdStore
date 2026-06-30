@@ -12,7 +12,10 @@ internal sealed class JsonColdStoreEntityRecordStore
 
     private readonly JsonColdStoreDatabaseSession _session;
     private readonly JsonColdStoreModelDescriptor _modelDescriptor;
+    private readonly JsonColdStoreModelCatalog _modelCatalog;
     private readonly JsonColdStoreIndexStore _indexStore;
+    private bool _modelCatalogValidatedForReads;
+    private bool _modelCatalogValidatedForWrites;
 
     internal JsonColdStoreEntityRecordStore(
         JsonColdStoreDatabaseSession session,
@@ -20,6 +23,7 @@ internal sealed class JsonColdStoreEntityRecordStore
     {
         _session = session ?? throw new ArgumentNullException(nameof(session));
         _modelDescriptor = modelDescriptor ?? throw new ArgumentNullException(nameof(modelDescriptor));
+        _modelCatalog = new JsonColdStoreModelCatalog(session.Options);
         _indexStore = new JsonColdStoreIndexStore(session.Options);
     }
 
@@ -41,6 +45,7 @@ internal sealed class JsonColdStoreEntityRecordStore
         ArgumentNullException.ThrowIfNull(entityType);
 
         var descriptor = _modelDescriptor.FindEntity(entityType);
+        await EnsureModelCatalogAsync(createIfMissing: true, cancellationToken);
         var recordId = descriptor.CreateRecordIdFromEntity(entity);
         var payload = JsonSerializer.SerializeToUtf8Bytes(entity, entityType, EntityJsonOptions);
 
@@ -59,6 +64,7 @@ internal sealed class JsonColdStoreEntityRecordStore
         where TEntity : class
     {
         var descriptor = _modelDescriptor.FindEntity(typeof(TEntity));
+        await EnsureModelCatalogAsync(createIfMissing: false, cancellationToken);
         var recordId = descriptor.CreateRecordId(keyValue);
         if (!_session.Records.RecordExists(descriptor.EntityName, recordId))
             return null;
@@ -79,6 +85,7 @@ internal sealed class JsonColdStoreEntityRecordStore
     {
         var descriptor = _modelDescriptor.FindEntity(typeof(TEntity));
         var index = descriptor.FindSinglePropertyIndex(propertyName);
+        await EnsureModelCatalogAsync(createIfMissing: false, cancellationToken);
         var indexKey = index.CreateIndexKeyFromValues(indexValue);
         var recordIds = await _indexStore.ReadRecordIdsAsync(
             descriptor.EntityName,
@@ -110,6 +117,7 @@ internal sealed class JsonColdStoreEntityRecordStore
         where TEntity : class
     {
         var descriptor = _modelDescriptor.FindEntity(typeof(TEntity));
+        await EnsureModelCatalogAsync(createIfMissing: false, cancellationToken);
         await foreach (var payload in _session.Records.ReadAllRecordsAsync(
             descriptor.EntityName,
             cancellationToken))
@@ -125,6 +133,7 @@ internal sealed class JsonColdStoreEntityRecordStore
         where TEntity : class
     {
         var descriptor = _modelDescriptor.FindEntity(typeof(TEntity));
+        await EnsureModelCatalogAsync(createIfMissing: true, cancellationToken);
         var bucketsByIndex = descriptor.Indexes.ToDictionary(
             index => index,
             _ => new Dictionary<string, List<string>>(StringComparer.Ordinal));
@@ -173,6 +182,7 @@ internal sealed class JsonColdStoreEntityRecordStore
         ArgumentNullException.ThrowIfNull(entityType);
 
         var descriptor = _modelDescriptor.FindEntity(entityType);
+        await EnsureModelCatalogAsync(createIfMissing: true, cancellationToken);
         var recordId = descriptor.CreateRecordIdFromEntity(entity);
 
         await _session.Records.DeleteRecordAsync(
@@ -181,6 +191,31 @@ internal sealed class JsonColdStoreEntityRecordStore
             cancellationToken);
 
         await RemoveIndexesAsync(descriptor, recordId, cancellationToken);
+    }
+
+    private async Task EnsureModelCatalogAsync(
+        bool createIfMissing,
+        CancellationToken cancellationToken)
+    {
+        if (createIfMissing)
+        {
+            if (_modelCatalogValidatedForWrites)
+                return;
+        }
+        else if (_modelCatalogValidatedForReads || _modelCatalogValidatedForWrites)
+        {
+            return;
+        }
+
+        var catalogExists = await _modelCatalog.EnsureCompatibleAsync(
+            _modelDescriptor,
+            createIfMissing,
+            cancellationToken);
+
+        if (catalogExists)
+            _modelCatalogValidatedForReads = true;
+        if (createIfMissing)
+            _modelCatalogValidatedForWrites = true;
     }
 
     private async Task UpsertIndexesAsync(
