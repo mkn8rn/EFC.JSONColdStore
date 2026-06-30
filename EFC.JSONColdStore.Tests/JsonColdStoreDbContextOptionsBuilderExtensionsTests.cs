@@ -450,6 +450,40 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
     }
 
     [Fact]
+    public async Task RebuildJsonColdStoreIndexesAsyncRepairsAllDeclaredIndexes()
+    {
+        var directory = TestDirectory("facade-index-rebuild-all-" + Guid.NewGuid().ToString("N"));
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+        using var context = new WritableDbContext(builder.Options);
+        context.Entities.Add(new WritableEntity
+        {
+            Id = Guid.Parse("50000000-0000-0000-0000-000000000002"),
+            Value = "repair-all",
+            Score = 42,
+        });
+        context.SaveChanges();
+        File.Delete(IndexPath(directory, "Value"));
+        File.Delete(IndexPath(directory, "Score"));
+
+        Assert.Empty(await context.Database.ReadJsonColdStoreIndexAsync<WritableEntity>("Value", "repair-all"));
+        Assert.Empty(await context.Database.ReadJsonColdStoreIndexAsync<WritableEntity>("Score", 42));
+        var rebuilt = await context.Database.RebuildJsonColdStoreIndexesAsync();
+        var repairedValue = await context.Database.ReadJsonColdStoreIndexAsync<WritableEntity>(
+            "Value",
+            "repair-all");
+        var repairedScore = await context.Database.ReadJsonColdStoreIndexAsync<WritableEntity>(
+            "Score",
+            42);
+
+        Assert.Equal(1, rebuilt);
+        Assert.Single(repairedValue);
+        Assert.Single(repairedScore);
+        Assert.Equal("repair-all", repairedValue[0].Value);
+        Assert.Equal(42, repairedScore[0].Score);
+    }
+
+    [Fact]
     public async Task VerifyJsonColdStoreAsyncCountsNewFormatRecords()
     {
         var directory = TestDirectory("verify-new-" + Guid.NewGuid().ToString("N"));
@@ -1286,6 +1320,14 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
 
     private static string TestDirectory(string name) =>
         Path.Combine(Path.GetTempPath(), "jsoncoldstore-tests", name);
+
+    private static string IndexPath(string directory, string propertyName) =>
+        Path.Combine(
+            directory,
+            "entities",
+            JsonColdStoreNameEncoder.EncodePathSegment(typeof(WritableEntity).FullName!),
+            "indexes",
+            JsonColdStoreNameEncoder.EncodePathSegment(propertyName) + ".json");
 
     private static async Task WriteLegacyEntityAsync(
         string directory,

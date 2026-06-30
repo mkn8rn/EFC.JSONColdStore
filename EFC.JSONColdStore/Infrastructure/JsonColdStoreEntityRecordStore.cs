@@ -239,28 +239,61 @@ internal sealed class JsonColdStoreEntityRecordStore
     {
         var descriptor = _modelDescriptor.FindEntity(typeof(TEntity));
         await EnsureModelCatalogAsync(createIfMissing: true, cancellationToken);
+        return await RebuildIndexesAsync(descriptor, cancellationToken);
+    }
+
+    internal async Task<int> RebuildIndexesAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureModelCatalogAsync(createIfMissing: true, cancellationToken);
+        var records = 0;
+
+        foreach (var descriptor in _modelDescriptor.Entities)
+            records += await RebuildIndexesAsync(descriptor, cancellationToken);
+
+        return records;
+    }
+
+    private async Task<int> RebuildIndexesAsync(
+        JsonColdStoreEntityDescriptor descriptor,
+        CancellationToken cancellationToken)
+    {
         var bucketsByIndex = descriptor.Indexes.ToDictionary(
             index => index,
             _ => new Dictionary<string, List<string>>(StringComparer.Ordinal));
         var records = 0;
+        var seenRecordIds = new HashSet<string>(StringComparer.Ordinal);
 
-        await foreach (var entity in ScanEntitiesAsync<TEntity>(cancellationToken))
+        await foreach (var payload in _session.Records.ReadAllRecordsAsync(
+            descriptor.EntityName,
+            cancellationToken))
         {
-            records++;
-            var recordId = descriptor.CreateRecordIdFromEntity(entity);
-            foreach (var index in descriptor.Indexes)
-            {
-                var indexKey = index.CreateIndexKeyFromEntity(entity);
-                var buckets = bucketsByIndex[index];
-                if (!buckets.TryGetValue(indexKey, out var recordIds))
-                {
-                    recordIds = [];
-                    buckets[indexKey] = recordIds;
-                }
+            var entity = JsonSerializer.Deserialize(payload, descriptor.ClrType, EntityReadJsonOptions);
+            if (entity is null)
+                continue;
 
-                if (!recordIds.Contains(recordId, StringComparer.Ordinal))
-                    recordIds.Add(recordId);
-            }
+            var recordId = descriptor.CreateRecordIdFromEntity(entity);
+            seenRecordIds.Add(recordId);
+            records++;
+            AddEntityToIndexBuckets(descriptor, bucketsByIndex, entity, recordId);
+        }
+
+        await foreach (var legacyRecord in _session.LegacyRecords.ReadAllRecordsAsync(
+            descriptor,
+            cancellationToken))
+        {
+            if (!seenRecordIds.Add(legacyRecord.RecordId))
+                continue;
+
+            var entity = JsonSerializer.Deserialize(
+                legacyRecord.Payload,
+                descriptor.ClrType,
+                EntityReadJsonOptions);
+            if (entity is null)
+                continue;
+
+            records++;
+            AddEntityToIndexBuckets(descriptor, bucketsByIndex, entity, legacyRecord.RecordId);
         }
 
         foreach (var (index, buckets) in bucketsByIndex)
@@ -276,6 +309,27 @@ internal sealed class JsonColdStoreEntityRecordStore
         }
 
         return records;
+    }
+
+    private static void AddEntityToIndexBuckets(
+        JsonColdStoreEntityDescriptor descriptor,
+        Dictionary<JsonColdStoreIndexDescriptor, Dictionary<string, List<string>>> bucketsByIndex,
+        object entity,
+        string recordId)
+    {
+        foreach (var index in descriptor.Indexes)
+        {
+            var indexKey = index.CreateIndexKeyFromEntity(entity);
+            var buckets = bucketsByIndex[index];
+            if (!buckets.TryGetValue(indexKey, out var recordIds))
+            {
+                recordIds = [];
+                buckets[indexKey] = recordIds;
+            }
+
+            if (!recordIds.Contains(recordId, StringComparer.Ordinal))
+                recordIds.Add(recordId);
+        }
     }
 
     internal async Task<JsonColdStoreEntityVerificationResult> VerifyEntitiesAsync(

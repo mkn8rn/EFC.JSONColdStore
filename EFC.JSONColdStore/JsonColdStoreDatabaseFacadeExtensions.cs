@@ -127,6 +127,31 @@ public static class JsonColdStoreDatabaseFacadeExtensions
     }
 
     /// <summary>
+    /// Rebuilds declared JSONColdStore index files for every mapped entity type.
+    /// </summary>
+    public static async Task<int> RebuildJsonColdStoreIndexesAsync(
+        this DatabaseFacade database,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(database);
+
+        var context = database.GetService<ICurrentDbContext>().Context;
+        var storeOptions = database.GetService<IDbContextOptions>()
+            .FindExtension<JsonColdStoreOptionsExtension>()?.Options
+            ?? throw new InvalidOperationException("JSONColdStore options are not configured.");
+
+        await using var session = await JsonColdStoreDatabaseSession.OpenAsync(
+            storeOptions,
+            acquireWriterLock: true,
+            cancellationToken);
+        var entityStore = new JsonColdStoreEntityRecordStore(
+            session,
+            JsonColdStoreModelDescriptor.Create(context.Model));
+
+        return await entityStore.RebuildIndexesAsync(cancellationToken);
+    }
+
+    /// <summary>
     /// Verifies JSONColdStore records and compatible legacy records without mutating storage.
     /// </summary>
     public static async Task<JsonColdStoreVerificationResult> VerifyJsonColdStoreAsync(
