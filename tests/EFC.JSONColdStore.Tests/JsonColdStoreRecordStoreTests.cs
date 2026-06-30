@@ -89,6 +89,61 @@ public sealed class JsonColdStoreRecordStoreTests
     }
 
     [Fact]
+    public async Task ReadRecordAsyncQuarantinesChecksumCorruptRecord()
+    {
+        var root = NewTempDirectory();
+        var options = new JsonColdStoreOptionsBuilder(root)
+            .UseCompression(JsonColdStoreCompression.None)
+            .UseChecksums(verifyOnStartup: true, verifyOnRead: true)
+            .UseFsyncOnWrite(false)
+            .Build();
+        var store = new JsonColdStoreRecordStore(options);
+        await store.WriteRecordAsync("Entity", "1", """{"id":1}"""u8.ToArray());
+        var recordPath = JsonColdStorePathValidator.GetSafeChildPath(
+            root,
+            [.. JsonColdStoreRecordStore.GetRecordPathSegments("Entity", "1")]);
+        var bytes = await File.ReadAllBytesAsync(recordPath);
+        bytes[^1] ^= 0x7F;
+        await File.WriteAllBytesAsync(recordPath, bytes);
+
+        await Assert.ThrowsAsync<InvalidDataException>(() => store.ReadRecordAsync("Entity", "1"));
+
+        Assert.False(store.RecordExists("Entity", "1"));
+        var quarantineDirectory = Path.Combine(root, "_quarantine", "records");
+        Assert.True(Directory.Exists(quarantineDirectory));
+        Assert.Single(Directory.GetFiles(quarantineDirectory, "*.jcs"));
+    }
+
+    [Fact]
+    public async Task ReadAllRecordsAsyncQuarantinesChecksumCorruptRecord()
+    {
+        var root = NewTempDirectory();
+        var options = new JsonColdStoreOptionsBuilder(root)
+            .UseCompression(JsonColdStoreCompression.None)
+            .UseChecksums(verifyOnStartup: true, verifyOnRead: true)
+            .UseFsyncOnWrite(false)
+            .Build();
+        var store = new JsonColdStoreRecordStore(options);
+        await store.WriteRecordAsync("Entity", "1", """{"id":1}"""u8.ToArray());
+        var recordPath = JsonColdStorePathValidator.GetSafeChildPath(
+            root,
+            [.. JsonColdStoreRecordStore.GetRecordPathSegments("Entity", "1")]);
+        var bytes = await File.ReadAllBytesAsync(recordPath);
+        bytes[^1] ^= 0x7F;
+        await File.WriteAllBytesAsync(recordPath, bytes);
+
+        await Assert.ThrowsAsync<InvalidDataException>(async () =>
+        {
+            await foreach (var _ in store.ReadAllRecordsAsync("Entity"))
+            {
+            }
+        });
+
+        Assert.False(store.RecordExists("Entity", "1"));
+        Assert.Single(Directory.GetFiles(Path.Combine(root, "_quarantine", "records"), "*.jcs"));
+    }
+
+    [Fact]
     public async Task RecoverPendingManifestsDeletesManifestWhenTargetExists()
     {
         var root = NewTempDirectory();

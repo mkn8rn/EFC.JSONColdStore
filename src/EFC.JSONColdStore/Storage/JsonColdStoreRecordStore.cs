@@ -1,5 +1,6 @@
-using System.Text.Json;
 using System.Runtime.CompilerServices;
+using System.Globalization;
+using System.Text.Json;
 
 namespace EFC.JSONColdStore.Storage;
 
@@ -86,12 +87,24 @@ internal sealed class JsonColdStoreRecordStore
         string recordId,
         CancellationToken cancellationToken = default)
     {
+        var recordPath = GetRecordPathSegments(entityName, recordId);
+        var activeRecordPath = JsonColdStorePathValidator.GetSafeChildPath(
+            _options.DatabaseDirectory,
+            [.. recordPath]);
         var payload = await JsonColdStoreAtomicFileWriter.ReadAsync(
             _options.DatabaseDirectory,
-            GetRecordPathSegments(entityName, recordId),
+            recordPath,
             cancellationToken);
 
-        return JsonColdStorePayloadCodec.Decode(payload, _options);
+        try
+        {
+            return JsonColdStorePayloadCodec.Decode(payload, _options);
+        }
+        catch (InvalidDataException)
+        {
+            QuarantineRecordPath(activeRecordPath);
+            throw;
+        }
     }
 
     internal bool RecordExists(string entityName, string recordId)
@@ -120,7 +133,18 @@ internal sealed class JsonColdStoreRecordStore
         {
             cancellationToken.ThrowIfCancellationRequested();
             var payload = await File.ReadAllBytesAsync(recordPath, cancellationToken);
-            yield return JsonColdStorePayloadCodec.Decode(payload, _options);
+            byte[] decoded;
+            try
+            {
+                decoded = JsonColdStorePayloadCodec.Decode(payload, _options);
+            }
+            catch (InvalidDataException)
+            {
+                QuarantineRecordPath(recordPath);
+                throw;
+            }
+
+            yield return decoded;
         }
     }
 
@@ -233,6 +257,26 @@ internal sealed class JsonColdStoreRecordStore
 
         var failedPath = Path.Combine(failedDirectory, Path.GetFileName(manifestPath));
         File.Move(manifestPath, failedPath, overwrite: true);
+    }
+
+    private void QuarantineRecordPath(string recordPath)
+    {
+        if (!File.Exists(recordPath))
+            return;
+
+        var quarantineDirectory = JsonColdStorePathValidator.GetSafeChildPath(
+            _options.DatabaseDirectory,
+            "_quarantine",
+            "records");
+        Directory.CreateDirectory(quarantineDirectory);
+
+        var quarantineFileName =
+            DateTimeOffset.UtcNow.ToString("yyyyMMddHHmmssfffffff", CultureInfo.InvariantCulture)
+            + "-"
+            + Guid.NewGuid().ToString("N")
+            + "-"
+            + Path.GetFileName(recordPath);
+        File.Move(recordPath, Path.Combine(quarantineDirectory, quarantineFileName), overwrite: false);
     }
 }
 
