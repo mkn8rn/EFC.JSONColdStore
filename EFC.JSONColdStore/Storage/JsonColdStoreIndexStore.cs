@@ -92,6 +92,14 @@ internal sealed class JsonColdStoreIndexStore
             : [];
     }
 
+    internal bool DocumentExists(string entityName, string indexName)
+    {
+        if (string.IsNullOrWhiteSpace(indexName))
+            throw new ArgumentException("An index name is required.", nameof(indexName));
+
+        return File.Exists(GetIndexPath(entityName, indexName));
+    }
+
     internal async Task<IReadOnlyList<string>> ReadAllRecordIdsAsync(
         string entityName,
         string indexName,

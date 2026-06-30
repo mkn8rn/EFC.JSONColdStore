@@ -269,9 +269,11 @@ public sealed class JsonColdStoreEntityRecordStoreTests
             JsonColdStoreNameEncoder.EncodePathSegment(typeof(ConsumerEvent).FullName!),
             "indexes"), recursive: true);
 
-        Assert.Empty(await entityStore.ReadEntitiesByIndexAsync<ConsumerEvent>("ConsumerId", "rebuild"));
+        var unavailable = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => entityStore.ReadEntitiesByIndexAsync<ConsumerEvent>("ConsumerId", "rebuild"));
         var rebuilt = await entityStore.RebuildIndexesAsync<ConsumerEvent>();
 
+        Assert.Contains("index", unavailable.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(1, rebuilt);
         var indexed = await entityStore.ReadEntitiesByIndexAsync<ConsumerEvent>("ConsumerId", "rebuild");
         Assert.Single(indexed);

@@ -143,6 +143,18 @@ internal sealed class JsonColdStoreRecordStore
         return File.Exists(path);
     }
 
+    internal bool EntityHasRecords(string entityName)
+    {
+        var recordsDirectory = JsonColdStorePathValidator.GetSafeChildPath(
+            _options.DatabaseDirectory,
+            "entities",
+            JsonColdStoreNameEncoder.EncodePathSegment(entityName),
+            "records");
+
+        return Directory.Exists(recordsDirectory)
+            && Directory.EnumerateFiles(recordsDirectory, "*.jcs").Any();
+    }
+
     internal async IAsyncEnumerable<byte[]> ReadAllRecordsAsync(
         string entityName,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)

@@ -420,6 +420,20 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
     }
 
     [Fact]
+    public async Task ReadJsonColdStoreIndexAsyncReturnsEmptyWhenDeclaredIndexHasNoCurrentRecords()
+    {
+        var directory = TestDirectory("facade-index-empty-" + Guid.NewGuid().ToString("N"));
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+        using var context = new WritableDbContext(builder.Options);
+        context.Database.EnsureCreated();
+
+        var matches = await context.Database.ReadJsonColdStoreIndexAsync<WritableEntity>("Value", "missing");
+
+        Assert.Empty(matches);
+    }
+
+    [Fact]
     public async Task RebuildJsonColdStoreIndexesAsyncRepairsDeletedIndexFile()
     {
         var directory = TestDirectory("facade-index-rebuild-" + Guid.NewGuid().ToString("N"));
@@ -440,10 +454,12 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
             JsonColdStoreNameEncoder.EncodePathSegment("Value") + ".json");
         File.Delete(indexPath);
 
-        Assert.Empty(await context.Database.ReadJsonColdStoreIndexAsync<WritableEntity>("Value", "repair"));
+        var unavailable = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => context.Database.ReadJsonColdStoreIndexAsync<WritableEntity>("Value", "repair"));
         var rebuilt = await context.Database.RebuildJsonColdStoreIndexesAsync<WritableEntity>();
         var repaired = await context.Database.ReadJsonColdStoreIndexAsync<WritableEntity>("Value", "repair");
 
+        Assert.Contains("index", unavailable.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(1, rebuilt);
         Assert.Single(repaired);
         Assert.Equal("repair", repaired[0].Value);
@@ -466,8 +482,10 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
         File.Delete(IndexPath(directory, "Value"));
         File.Delete(IndexPath(directory, "Score"));
 
-        Assert.Empty(await context.Database.ReadJsonColdStoreIndexAsync<WritableEntity>("Value", "repair-all"));
-        Assert.Empty(await context.Database.ReadJsonColdStoreIndexAsync<WritableEntity>("Score", 42));
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => context.Database.ReadJsonColdStoreIndexAsync<WritableEntity>("Value", "repair-all"));
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => context.Database.ReadJsonColdStoreIndexAsync<WritableEntity>("Score", 42));
         var rebuilt = await context.Database.RebuildJsonColdStoreIndexesAsync();
         var repairedValue = await context.Database.ReadJsonColdStoreIndexAsync<WritableEntity>(
             "Value",

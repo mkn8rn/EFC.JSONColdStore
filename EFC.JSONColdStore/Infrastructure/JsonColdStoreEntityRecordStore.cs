@@ -114,6 +114,14 @@ internal sealed class JsonColdStoreEntityRecordStore
         if (maxResults <= 0)
             return [];
 
+        if (!_indexStore.DocumentExists(descriptor.EntityName, index.StorageName)
+            && _session.Records.EntityHasRecords(descriptor.EntityName))
+        {
+            throw new InvalidOperationException(
+                $"The JSONColdStore index '{index.StorageName}' for entity '{descriptor.EntityName}' is missing. "
+                + "Rebuild JSONColdStore indexes before using this indexed read.");
+        }
+
         var indexKey = index.CreateIndexKeyFromValues(indexValue);
         var recordIds = await _indexStore.ReadRecordIdsAsync(
             descriptor.EntityName,
