@@ -836,6 +836,38 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
     }
 
     [Fact]
+    public async Task ReadJsonColdStoreIndexAsyncUsesLegacyKeyScopedIndexShard()
+    {
+        var directory = TestDirectory("legacy-key-scoped-index-" + Guid.NewGuid().ToString("N"));
+        var matchId = Guid.Parse("70000000-0000-0000-0000-000000000006");
+        var skipId = Guid.Parse("70000000-0000-0000-0000-000000000007");
+        var indexKey = Guid.Parse("71000000-0000-0000-0000-000000000001");
+        await WriteLegacyEntityAsync(directory, new WritableEntity
+        {
+            Id = matchId,
+            Value = indexKey.ToString(),
+        });
+        await WriteLegacyEntityAsync(directory, new WritableEntity
+        {
+            Id = skipId,
+            Value = Guid.Parse("71000000-0000-0000-0000-000000000002").ToString(),
+        });
+        await WriteLegacyKeyScopedIndexAsync(directory, "Value", indexKey, [matchId.ToString()]);
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+
+        using var context = new WritableDbContext(builder.Options);
+        var matches = await context.Database.ReadJsonColdStoreIndexAsync<WritableEntity>(
+            "Value",
+            indexKey.ToString());
+
+        Assert.Single(matches);
+        Assert.Equal(matchId, matches[0].Id);
+        Assert.False(File.Exists(Path.Combine(directory, "_store.json")));
+        Assert.False(File.Exists(Path.Combine(directory, "_model.json")));
+    }
+
+    [Fact]
     public async Task SaveChangesRetiresSameKeyLegacyRecordAfterNewFormatWrite()
     {
         var directory = TestDirectory("legacy-retire-" + Guid.NewGuid().ToString("N"));
@@ -1501,6 +1533,19 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
         await File.WriteAllTextAsync(
             Path.Combine(entityDirectory, $"_index_{propertyName}.json"),
             JsonSerializer.Serialize(shard, new JsonSerializerOptions { WriteIndented = true }));
+    }
+
+    private static async Task WriteLegacyKeyScopedIndexAsync(
+        string directory,
+        string propertyName,
+        Guid indexKey,
+        IEnumerable<string> recordIds)
+    {
+        var indexDirectory = Path.Combine(directory, nameof(WritableEntity), $"_index_{propertyName}");
+        Directory.CreateDirectory(indexDirectory);
+        await File.WriteAllTextAsync(
+            Path.Combine(indexDirectory, $"{indexKey:D}.json"),
+            JsonSerializer.Serialize(recordIds.ToList(), new JsonSerializerOptions { WriteIndented = true }));
     }
 
     private static async Task<string> CorruptStoredRecordAsync(string directory, Guid id)
