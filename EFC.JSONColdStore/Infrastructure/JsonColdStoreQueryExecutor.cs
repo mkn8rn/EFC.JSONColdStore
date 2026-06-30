@@ -394,10 +394,12 @@ internal static class JsonColdStoreQueryExecutor
                 return entity is null ? [] : [entity];
             }
 
+            var maxResults = TryCreateUnorderedPureSeekLimit(queryContext, plan, seek);
             var indexed = await entityStore.ReadEntitiesByIndexAsync<TEntity>(
                     seek.PropertyName,
                     seek.Value!,
-                    cancellationToken)
+                    cancellationToken,
+                    maxResults)
                 .ConfigureAwait(false);
             return indexed.ToList();
         }
@@ -427,6 +429,45 @@ internal static class JsonColdStoreQueryExecutor
             results.Add(entity);
 
         return results;
+    }
+
+    private static int? TryCreateUnorderedPureSeekLimit(
+        QueryContext queryContext,
+        JsonColdStoreQueryPlan plan,
+        JsonColdStoreQuerySeek seek)
+    {
+        if (plan.Orderings.Count > 0 || plan.Skip is not null)
+            return null;
+
+        if (!HasOnlyEquivalentSeekFilter(queryContext, plan, seek))
+            return null;
+
+        var take = plan.Take is null
+            ? (int?)null
+            : EvaluateNonNegativeInt(queryContext, plan.Take, "Take");
+
+        return plan.Terminal switch
+        {
+            JsonColdStoreQueryTerminal.Sequence when take is not null => take.Value,
+            JsonColdStoreQueryTerminal.First => take is null ? 1 : Math.Min(take.Value, 1),
+            JsonColdStoreQueryTerminal.FirstOrDefault => take is null ? 1 : Math.Min(take.Value, 1),
+            JsonColdStoreQueryTerminal.Any => take is null ? 1 : Math.Min(take.Value, 1),
+            _ => null,
+        };
+    }
+
+    private static bool HasOnlyEquivalentSeekFilter(
+        QueryContext queryContext,
+        JsonColdStoreQueryPlan plan,
+        JsonColdStoreQuerySeek seek)
+    {
+        if (plan.Filters.Count != 1)
+            return false;
+
+        var filterSeek = TryCreateSeek(queryContext, plan.Filters[0]);
+        return filterSeek is not null
+            && string.Equals(filterSeek.PropertyName, seek.PropertyName, StringComparison.Ordinal)
+            && ValuesEqual(filterSeek.Value, seek.Value);
     }
 
     private static Func<TEntity, bool> CreatePredicate<TEntity>(

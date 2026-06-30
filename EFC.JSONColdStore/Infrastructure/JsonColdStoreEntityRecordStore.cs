@@ -104,12 +104,16 @@ internal sealed class JsonColdStoreEntityRecordStore
     internal async Task<IReadOnlyList<TEntity>> ReadEntitiesByIndexAsync<TEntity>(
         string propertyName,
         object indexValue,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        int? maxResults = null)
         where TEntity : class
     {
         var descriptor = _modelDescriptor.FindEntity(typeof(TEntity));
         var index = descriptor.FindSinglePropertyIndex(propertyName);
         await EnsureModelCatalogAsync(createIfMissing: false, cancellationToken);
+        if (maxResults <= 0)
+            return [];
+
         var indexKey = index.CreateIndexKeyFromValues(indexValue);
         var recordIds = await _indexStore.ReadRecordIdsAsync(
             descriptor.EntityName,
@@ -134,6 +138,8 @@ internal sealed class JsonColdStoreEntityRecordStore
             {
                 seenRecordIds.Add(recordId);
                 results.Add(entity);
+                if (HasReachedLimit(results, maxResults))
+                    return results;
             }
         }
 
@@ -144,6 +150,7 @@ internal sealed class JsonColdStoreEntityRecordStore
             indexValue,
             seenRecordIds,
             results,
+            maxResults,
             cancellationToken);
 
         return results;
@@ -446,6 +453,7 @@ internal sealed class JsonColdStoreEntityRecordStore
         object indexValue,
         HashSet<string> seenRecordIds,
         List<TEntity> results,
+        int? maxResults,
         CancellationToken cancellationToken)
         where TEntity : class
     {
@@ -472,7 +480,11 @@ internal sealed class JsonColdStoreEntityRecordStore
                     cancellationToken);
                 var entity = JsonSerializer.Deserialize<TEntity>(payload, EntityReadJsonOptions);
                 if (entity is not null)
+                {
                     results.Add(entity);
+                    if (HasReachedLimit(results, maxResults))
+                        return;
+                }
             }
 
             return;
@@ -494,9 +506,14 @@ internal sealed class JsonColdStoreEntityRecordStore
                     StringComparison.Ordinal))
             {
                 results.Add(entity);
+                if (HasReachedLimit(results, maxResults))
+                    return;
             }
         }
     }
+
+    private static bool HasReachedLimit<TEntity>(List<TEntity> results, int? maxResults) =>
+        maxResults is not null && results.Count >= maxResults.Value;
 
     private sealed class NullableGuidConverter : JsonConverter<Guid>
     {

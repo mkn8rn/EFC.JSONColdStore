@@ -1376,6 +1376,75 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
     }
 
     [Fact]
+    public async Task LinqIndexedTakeLimitsCandidateMaterialization()
+    {
+        var directory = TestDirectory("query-index-take-limit-" + Guid.NewGuid().ToString("N"));
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(
+            directory,
+            store => store
+                .UseFsyncOnWrite(false)
+                .UseChecksums(verifyOnStartup: true, verifyOnRead: true));
+        using var context = new WritableDbContext(builder.Options);
+        var expectedId = Guid.Parse("84000000-0000-0000-0000-000000000001");
+        var corruptId = Guid.Parse("84000000-0000-0000-0000-000000000002");
+        context.Entities.AddRange(
+            new WritableEntity
+            {
+                Id = expectedId,
+                Value = "limited-take",
+            },
+            new WritableEntity
+            {
+                Id = corruptId,
+                Value = "limited-take",
+            });
+        context.SaveChanges();
+        await CorruptStoredRecordAsync(directory, corruptId);
+
+        var ids = context.Entities
+            .Where(entity => entity.Value == "limited-take")
+            .Take(1)
+            .Select(entity => entity.Id)
+            .ToList();
+
+        Assert.Equal([expectedId], ids);
+    }
+
+    [Fact]
+    public async Task LinqIndexedFirstOrDefaultLimitsCandidateMaterialization()
+    {
+        var directory = TestDirectory("query-index-first-limit-" + Guid.NewGuid().ToString("N"));
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(
+            directory,
+            store => store
+                .UseFsyncOnWrite(false)
+                .UseChecksums(verifyOnStartup: true, verifyOnRead: true));
+        using var context = new WritableDbContext(builder.Options);
+        var expectedId = Guid.Parse("84000000-0000-0000-0000-000000000003");
+        var corruptId = Guid.Parse("84000000-0000-0000-0000-000000000004");
+        context.Entities.AddRange(
+            new WritableEntity
+            {
+                Id = expectedId,
+                Value = "limited-first",
+            },
+            new WritableEntity
+            {
+                Id = corruptId,
+                Value = "limited-first",
+            });
+        context.SaveChanges();
+        await CorruptStoredRecordAsync(directory, corruptId);
+
+        var entity = context.Entities.FirstOrDefault(entity => entity.Value == "limited-first");
+
+        Assert.NotNull(entity);
+        Assert.Equal(expectedId, entity.Id);
+    }
+
+    [Fact]
     public void LinqProjectionStillThrowsWhenFullScanWouldBeRequiredByDefault()
     {
         var directory = TestDirectory("query-projection-unsupported-" + Guid.NewGuid().ToString("N"));
