@@ -134,6 +134,66 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
     }
 
     [Fact]
+    public async Task CanConnectReturnsTrueForEncryptedLegacyEntityWithConfiguredKey()
+    {
+        var directory = TestDirectory("can-connect-encrypted-legacy-" + Guid.NewGuid().ToString("N"));
+        using var key = JsonColdStoreEncryptionKey.FromBytes(new byte[32]);
+        await WriteLegacyEntityAsync(
+            directory,
+            new WritableEntity
+            {
+                Id = Guid.Parse("62000000-0000-0000-0000-000000000002"),
+                Value = "encrypted legacy connect",
+            },
+            key);
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(
+            directory,
+            store => store
+                .UseFsyncOnWrite(false)
+                .UseEncryptionKey(key));
+        using var context = new WritableDbContext(builder.Options);
+
+        Assert.True(context.Database.CanConnect());
+        Assert.True(await context.Database.CanConnectAsync());
+    }
+
+    [Fact]
+    public async Task CanConnectReturnsFalseForEncryptedLegacyEntityWithoutKey()
+    {
+        var directory = TestDirectory("can-connect-encrypted-legacy-missing-key-" + Guid.NewGuid().ToString("N"));
+        using var key = JsonColdStoreEncryptionKey.FromBytes(new byte[32]);
+        await WriteLegacyEntityAsync(
+            directory,
+            new WritableEntity
+            {
+                Id = Guid.Parse("62000000-0000-0000-0000-000000000003"),
+                Value = "encrypted legacy blocked",
+            },
+            key);
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+        using var context = new WritableDbContext(builder.Options);
+
+        Assert.False(context.Database.CanConnect());
+        Assert.False(await context.Database.CanConnectAsync());
+    }
+
+    [Fact]
+    public async Task CanConnectAsyncHonorsCancellation()
+    {
+        var directory = TestDirectory("can-connect-canceled-" + Guid.NewGuid().ToString("N"));
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+        using var context = new WritableDbContext(builder.Options);
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => context.Database.CanConnectAsync(cts.Token));
+    }
+
+    [Fact]
     public void CanConnectReturnsFalseForUnrelatedDirectory()
     {
         var directory = TestDirectory("can-connect-unrelated-" + Guid.NewGuid().ToString("N"));

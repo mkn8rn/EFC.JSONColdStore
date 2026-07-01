@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text.Json;
 using EFC.JSONColdStore.Storage;
 using Microsoft.EntityFrameworkCore.Infrastructure;
@@ -114,6 +115,17 @@ internal sealed class JsonColdStoreDatabaseCreator : IDatabaseCreator
 
     public bool CanConnect()
     {
+        return CanConnectAsync()
+            .GetAwaiter()
+            .GetResult();
+    }
+
+    public Task<bool> CanConnectAsync(CancellationToken cancellationToken = default) =>
+        CanConnectInternalAsync(cancellationToken);
+
+    private async Task<bool> CanConnectInternalAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
         var databaseDirectory = JsonColdStorePathValidator.GetSafeChildPath(_options.DatabaseDirectory);
         if (!Directory.Exists(databaseDirectory))
             return false;
@@ -122,26 +134,30 @@ internal sealed class JsonColdStoreDatabaseCreator : IDatabaseCreator
             _options.DatabaseDirectory,
             JsonColdStoreCatalog.StoreFileName);
         if (File.Exists(storeFilePath))
-            return CanLoadStoreMetadata();
+            return await CanLoadStoreMetadataAsync(cancellationToken).ConfigureAwait(false);
 
         var modelDescriptor = JsonColdStoreModelDescriptor.Create(_currentDbContext.Context.Model);
-        return modelDescriptor.Entities.Any(HasLegacyRecords);
+        var legacyRecords = new JsonColdStoreLegacyRecordStore(_options);
+        foreach (var descriptor in modelDescriptor.Entities)
+        {
+            if (await HasReadableLegacyRecordAsync(
+                    legacyRecords,
+                    descriptor,
+                    cancellationToken).ConfigureAwait(false))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
-    public Task<bool> CanConnectAsync(CancellationToken cancellationToken = default)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        return Task.FromResult(CanConnect());
-    }
-
-    private bool CanLoadStoreMetadata()
+    private async Task<bool> CanLoadStoreMetadataAsync(CancellationToken cancellationToken)
     {
         try
         {
             var catalog = new JsonColdStoreCatalog(_options);
-            catalog.LoadAndValidateAsync()
-                .GetAwaiter()
-                .GetResult();
+            await catalog.LoadAndValidateAsync(cancellationToken).ConfigureAwait(false);
             return true;
         }
         catch (Exception ex) when (IsConnectionProbeFailure(ex))
@@ -150,14 +166,22 @@ internal sealed class JsonColdStoreDatabaseCreator : IDatabaseCreator
         }
     }
 
-    private bool HasLegacyRecords(JsonColdStoreEntityDescriptor descriptor)
+    private static async Task<bool> HasReadableLegacyRecordAsync(
+        JsonColdStoreLegacyRecordStore legacyRecords,
+        JsonColdStoreEntityDescriptor descriptor,
+        CancellationToken cancellationToken)
     {
-        var legacyDirectory = JsonColdStorePathValidator.GetSafeChildPath(
-            _options.DatabaseDirectory,
-            descriptor.ClrType.Name);
-        return Directory.Exists(legacyDirectory)
-            && Directory.EnumerateFiles(legacyDirectory, "*.json")
-                .Any(path => !Path.GetFileName(path).StartsWith('_'));
+        try
+        {
+            await foreach (var _ in legacyRecords.ReadAllRecordsAsync(descriptor, cancellationToken))
+                return true;
+        }
+        catch (Exception ex) when (IsConnectionProbeFailure(ex))
+        {
+            return false;
+        }
+
+        return false;
     }
 
     private static bool IsConnectionProbeFailure(Exception exception) =>
@@ -166,5 +190,6 @@ internal sealed class JsonColdStoreDatabaseCreator : IDatabaseCreator
             or JsonException
             or InvalidDataException
             or NotSupportedException
-            or InvalidOperationException;
+            or InvalidOperationException
+            or CryptographicException;
 }
