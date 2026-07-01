@@ -1420,6 +1420,38 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
     }
 
     [Fact]
+    public async Task GetJsonColdStoreDiagnosticsAsyncIgnoresUnsafeLegacyRecordFileNames()
+    {
+        var directory = TestDirectory("diagnostics-unsafe-legacy-" + Guid.NewGuid().ToString("N"));
+        await WriteLegacyEntityAsync(directory, new WritableEntity
+        {
+            Id = Guid.Parse("53000000-0000-0000-0000-000000000003"),
+            Value = "safe legacy diagnostics",
+            Score = 55,
+        });
+        await WriteLegacyEntityFileAsync(
+            directory,
+            ".json",
+            new WritableEntity
+            {
+                Id = Guid.Parse("53000000-0000-0000-0000-000000000004"),
+                Value = "unsafe legacy diagnostics",
+                Score = 56,
+            });
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+
+        using var context = new WritableDbContext(builder.Options);
+        var diagnostics = await context.Database.GetJsonColdStoreDiagnosticsAsync();
+
+        Assert.False(diagnostics.HasStoreMetadata);
+        Assert.Equal(1, diagnostics.LegacyRecordFileCount);
+        Assert.Equal(1, diagnostics.Entities[0].LegacyRecordFileCount);
+        Assert.False(File.Exists(Path.Combine(directory, "_store.json")));
+        Assert.False(File.Exists(Path.Combine(directory, "_model.json")));
+    }
+
+    [Fact]
     public async Task GetJsonColdStoreDiagnosticsAsyncCountsTemporaryFilesWithoutDeletingThem()
     {
         var directory = TestDirectory("diagnostics-temp-" + Guid.NewGuid().ToString("N"));
