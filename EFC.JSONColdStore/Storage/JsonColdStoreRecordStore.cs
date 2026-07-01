@@ -680,13 +680,16 @@ internal sealed class JsonColdStoreRecordStore
             "records");
         Directory.CreateDirectory(quarantineDirectory);
 
+        var quarantinedAt = DateTimeOffset.UtcNow;
         var quarantineFileName =
-            DateTimeOffset.UtcNow.ToString("yyyyMMddHHmmssfffffff", CultureInfo.InvariantCulture)
+            quarantinedAt.ToString("yyyyMMddHHmmssfffffff", CultureInfo.InvariantCulture)
             + "-"
             + Guid.NewGuid().ToString("N")
             + "-"
             + Path.GetFileName(recordPath);
-        File.Move(recordPath, Path.Combine(quarantineDirectory, quarantineFileName), overwrite: false);
+        var quarantinePath = Path.Combine(quarantineDirectory, quarantineFileName);
+        File.Move(recordPath, quarantinePath, overwrite: false);
+        File.SetLastWriteTimeUtc(quarantinePath, quarantinedAt.UtcDateTime);
         PruneExpiredQuarantineFiles(quarantineDirectory);
     }
 
