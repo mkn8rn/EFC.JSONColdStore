@@ -2024,6 +2024,62 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
     }
 
     [Fact]
+    public async Task LinqToListAsyncScansWhenExplicitScanPolicyAndQueryIsMarked()
+    {
+        var directory = TestDirectory("query-async-explicit-scan-" + Guid.NewGuid().ToString("N"));
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(
+            directory,
+            store => store
+                .UseFsyncOnWrite(false)
+                .UseFullScanPolicy(JsonColdStoreScanPolicy.AllowExplicitScans));
+
+        using var context = new WritableDbContext(builder.Options);
+        context.Entities.AddRange(
+            new WritableEntity
+            {
+                Id = Guid.Parse("81000000-0000-0000-0000-000000000010"),
+                Value = "match-one",
+            },
+            new WritableEntity
+            {
+                Id = Guid.Parse("81000000-0000-0000-0000-000000000011"),
+                Value = "skip",
+            },
+            new WritableEntity
+            {
+                Id = Guid.Parse("81000000-0000-0000-0000-000000000012"),
+                Value = "match-two",
+            });
+        context.SaveChanges();
+
+        var values = await context.Entities
+            .AsJsonColdStoreExplicitScan()
+            .Where(entity => entity.Value.Contains("match"))
+            .Select(entity => entity.Value)
+            .ToListAsync();
+
+        Assert.Equal(["match-one", "match-two"], values.Order().ToArray());
+    }
+
+    [Fact]
+    public void LinqToListThrowsWhenExplicitScanPolicyButQueryIsNotMarked()
+    {
+        var directory = TestDirectory("query-explicit-scan-unmarked-" + Guid.NewGuid().ToString("N"));
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(
+            directory,
+            store => store
+                .UseFsyncOnWrite(false)
+                .UseFullScanPolicy(JsonColdStoreScanPolicy.AllowExplicitScans));
+        using var context = new WritableDbContext(builder.Options);
+
+        var exception = Assert.Throws<NotSupportedException>(() => context.Entities.ToList());
+
+        Assert.Contains("AsJsonColdStoreExplicitScan", exception.Message);
+    }
+
+    [Fact]
     public async Task LinqToListAsyncThrowsWhenFullScanWouldBeRequiredByDefault()
     {
         var directory = TestDirectory("query-async-unsupported-" + Guid.NewGuid().ToString("N"));
@@ -2069,6 +2125,59 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
             .ToArray();
 
         Assert.Equal(["first", "second"], values);
+    }
+
+    [Fact]
+    public void LinqToListScansWhenExplicitScanPolicyAndQueryIsMarked()
+    {
+        var directory = TestDirectory("query-explicit-scan-" + Guid.NewGuid().ToString("N"));
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(
+            directory,
+            store => store
+                .UseFsyncOnWrite(false)
+                .UseFullScanPolicy(JsonColdStoreScanPolicy.AllowExplicitScans));
+
+        using var context = new WritableDbContext(builder.Options);
+        context.Entities.AddRange(
+            new WritableEntity
+            {
+                Id = Guid.Parse("80000000-0000-0000-0000-000000000010"),
+                Value = "match-one",
+            },
+            new WritableEntity
+            {
+                Id = Guid.Parse("80000000-0000-0000-0000-000000000011"),
+                Value = "skip",
+            },
+            new WritableEntity
+            {
+                Id = Guid.Parse("80000000-0000-0000-0000-000000000012"),
+                Value = "match-two",
+            });
+        context.SaveChanges();
+
+        var values = context.Entities
+            .Where(entity => entity.Value.Contains("match"))
+            .AsJsonColdStoreExplicitScan()
+            .Select(entity => entity.Value)
+            .ToList();
+
+        Assert.Equal(["match-one", "match-two"], values.Order().ToArray());
+    }
+
+    [Fact]
+    public void LinqToListThrowsWhenQueryIsMarkedButExplicitScanPolicyIsNotConfigured()
+    {
+        var directory = TestDirectory("query-explicit-scan-default-policy-" + Guid.NewGuid().ToString("N"));
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+        using var context = new WritableDbContext(builder.Options);
+
+        var exception = Assert.Throws<NotSupportedException>(
+            () => context.Entities.AsJsonColdStoreExplicitScan().ToList());
+
+        Assert.Contains("AllowExplicitScans", exception.Message);
     }
 
     [Fact]

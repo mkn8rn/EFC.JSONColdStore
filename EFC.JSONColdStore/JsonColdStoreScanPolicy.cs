@@ -5,10 +5,10 @@ namespace EFC.JSONColdStore;
 /// </summary>
 public enum JsonColdStoreScanPolicy
 {
-    /// <summary>Fail unsupported full scans unless the query explicitly opts in.</summary>
+    /// <summary>Reject LINQ query shapes that require a full scan.</summary>
     FailUnlessExplicit = 0,
 
-    /// <summary>Allow full scans only when provider APIs mark the scan explicitly.</summary>
+    /// <summary>Allow full scans only when the LINQ query marks the scan explicitly.</summary>
     AllowExplicitScans = 1,
 
     /// <summary>Allow scans without a separate opt-in. Useful for small stores only.</summary>

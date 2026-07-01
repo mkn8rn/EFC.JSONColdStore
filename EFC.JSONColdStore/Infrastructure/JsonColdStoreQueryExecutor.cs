@@ -432,11 +432,12 @@ internal static class JsonColdStoreQueryExecutor
             return boundedResults;
         }
 
-        if (options.FullScanPolicy != JsonColdStoreScanPolicy.AllowSilentScans)
+        if (!CanExecuteFullScan(options, plan))
         {
             throw Unsupported(
                 "LINQ query execution would require a full scan. Declare a single-property index, "
-                + "query by primary key, or allow silent scans for small stores.");
+                + "query by primary key, call AsJsonColdStoreExplicitScan with AllowExplicitScans, "
+                + "or allow silent scans for small stores.");
         }
 
         var results = new List<TEntity>();
@@ -445,6 +446,12 @@ internal static class JsonColdStoreQueryExecutor
 
         return results;
     }
+
+    private static bool CanExecuteFullScan(
+        JsonColdStoreOptions options,
+        JsonColdStoreQueryPlan plan) =>
+        options.FullScanPolicy == JsonColdStoreScanPolicy.AllowSilentScans
+        || (options.FullScanPolicy == JsonColdStoreScanPolicy.AllowExplicitScans && plan.ExplicitScan);
 
     private static int? TryCreateUnorderedPureSeekLimit(
         QueryContext queryContext,
@@ -718,8 +725,14 @@ internal sealed record JsonColdStoreQueryPlan(
     Expression? Skip,
     Expression? Take,
     LambdaExpression? Projection,
-    JsonColdStoreQueryTerminal Terminal)
+    JsonColdStoreQueryTerminal Terminal,
+    bool ExplicitScan)
 {
+    private static readonly MethodInfo ExplicitScanMethod =
+        typeof(JsonColdStoreQueryableExtensions)
+            .GetMethod(nameof(JsonColdStoreQueryableExtensions.AsJsonColdStoreExplicitScan))
+        ?? throw new InvalidOperationException("The JSONColdStore query planner is misconfigured.");
+
     internal static JsonColdStoreQueryPlan Create(Expression query)
     {
         var builder = Parse(query);
@@ -730,7 +743,8 @@ internal sealed record JsonColdStoreQueryPlan(
             builder.Skip,
             builder.Take,
             builder.Projection,
-            builder.Terminal);
+            builder.Terminal,
+            builder.ExplicitScan);
     }
 
     private static JsonColdStoreQueryPlanBuilder Parse(Expression expression)
@@ -740,6 +754,13 @@ internal sealed record JsonColdStoreQueryPlan(
 
         if (expression is not MethodCallExpression call)
             throw Unsupported("The LINQ query expression is not supported.");
+
+        if (IsExplicitScanCall(call))
+        {
+            var builder = Parse(call.Arguments[0]);
+            builder.ExplicitScan = true;
+            return builder;
+        }
 
         var methodName = call.Method.Name;
         switch (methodName)
@@ -838,6 +859,10 @@ internal sealed record JsonColdStoreQueryPlan(
         }
     }
 
+    private static bool IsExplicitScanCall(MethodCallExpression call) =>
+        call.Method.IsGenericMethod
+        && call.Method.GetGenericMethodDefinition() == ExplicitScanMethod;
+
     private static void AddFilters(JsonColdStoreQueryPlanBuilder builder, Expression expression)
     {
         var lambda = UnquoteLambda(expression);
@@ -887,6 +912,8 @@ internal sealed class JsonColdStoreQueryPlanBuilder(Type entityType)
     internal LambdaExpression? Projection { get; set; }
 
     internal JsonColdStoreQueryTerminal Terminal { get; set; } = JsonColdStoreQueryTerminal.Sequence;
+
+    internal bool ExplicitScan { get; set; }
 }
 
 internal sealed record JsonColdStoreQueryOrdering(LambdaExpression KeySelector, bool Descending);
