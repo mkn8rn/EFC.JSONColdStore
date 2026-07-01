@@ -79,6 +79,25 @@ public sealed class JsonColdStorePayloadCodecTests
     }
 
     [Fact]
+    public void DecodeRejectsEnvelopeWithEncryptionMetadataButNoEncryptionFlag()
+    {
+        using var key = JsonColdStoreEncryptionKey.FromBytes(new byte[32]);
+        var options = new JsonColdStoreOptionsBuilder(TestDirectory("inconsistent-encryption-metadata"))
+            .UseCompression(JsonColdStoreCompression.None)
+            .UseEncryptionKey(key)
+            .Build();
+
+        var encoded = JsonColdStorePayloadCodec.Encode("secret"u8, options);
+        encoded[5] = (byte)(encoded[5] & ~0x02);
+        encoded[7] = 0;
+
+        var exception = Assert.Throws<InvalidDataException>(
+            () => JsonColdStorePayloadCodec.Decode(encoded, options));
+
+        Assert.Contains("Encryption metadata", exception.Message);
+    }
+
+    [Fact]
     public void RequireEncryptedStoreRejectsPlainEnvelope()
     {
         using var key = JsonColdStoreEncryptionKey.FromBytes(new byte[32]);

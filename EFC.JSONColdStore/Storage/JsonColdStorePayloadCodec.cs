@@ -298,6 +298,8 @@ internal static class JsonColdStorePayloadCodec
             throw new InvalidDataException("Encryption metadata is inconsistent.");
         if (encrypted && (nonceLength != NonceLength || tagLength != TagLength))
             throw new InvalidDataException("AES-GCM envelope metadata is invalid.");
+        if (!encrypted && (keyIdLength != 0 || nonceLength != 0 || tagLength != 0))
+            throw new InvalidDataException("Encryption metadata is inconsistent.");
         if (hasChecksum && checksumLength != ChecksumLength)
             throw new InvalidDataException("Payload checksum metadata is invalid.");
         if (!hasChecksum && checksumLength != 0)
