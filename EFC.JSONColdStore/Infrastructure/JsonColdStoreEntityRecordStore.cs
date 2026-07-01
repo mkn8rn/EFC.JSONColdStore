@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Linq.Expressions;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using EFC.JSONColdStore.Storage;
@@ -211,42 +213,34 @@ internal sealed class JsonColdStoreEntityRecordStore
             descriptor.EntityName,
             index.StorageName,
             cancellationToken);
-        var results = new List<TEntity>();
-        var seenRecordIds = new HashSet<string>(StringComparer.Ordinal);
-
-        foreach (var recordId in recordIds)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (!_session.Records.RecordExists(descriptor.EntityName, recordId))
-                continue;
-
-            var payload = await _session.Records.ReadRecordAsync(
-                descriptor.EntityName,
-                recordId,
-                cancellationToken);
-            var entity = JsonSerializer.Deserialize<TEntity>(payload, EntityReadJsonOptions);
-            if (entity is not null)
-            {
-                seenRecordIds.Add(recordId);
-                results.Add(entity);
-            }
-        }
-
-        await foreach (var legacyRecord in _session.LegacyRecords.ReadAllRecordsAsync(
+        return await ReadCurrentRecordIdsAndLegacyAsync<TEntity>(
             descriptor,
-            cancellationToken))
-        {
-            if (!seenRecordIds.Add(legacyRecord.RecordId))
-                continue;
+            recordIds,
+            cancellationToken);
+    }
 
-            var entity = JsonSerializer.Deserialize<TEntity>(
-                legacyRecord.Payload,
-                EntityReadJsonOptions);
-            if (entity is not null)
-                results.Add(entity);
-        }
+    internal async Task<IReadOnlyList<TEntity>> ReadEntitiesByIndexedRangeAsync<TEntity>(
+        string propertyName,
+        object indexValue,
+        ExpressionType operatorType,
+        CancellationToken cancellationToken = default)
+        where TEntity : class
+    {
+        var descriptor = _modelDescriptor.FindEntity(typeof(TEntity));
+        var index = descriptor.FindSinglePropertyIndex(propertyName);
+        await EnsureModelCatalogAsync(createIfMissing: false, cancellationToken);
+        EnsureCurrentIndexAvailable(descriptor, index);
 
-        return results;
+        var recordIds = await ReadRangeRecordIdsAsync(
+            descriptor,
+            index,
+            indexValue,
+            operatorType,
+            cancellationToken);
+        return await ReadCurrentRecordIdsAndLegacyAsync<TEntity>(
+            descriptor,
+            recordIds,
+            cancellationToken);
     }
 
     internal async IAsyncEnumerable<TEntity> ScanEntitiesAsync<TEntity>(
@@ -523,6 +517,157 @@ internal sealed class JsonColdStoreEntityRecordStore
         }
 
         return true;
+    }
+
+    private async Task<IReadOnlyList<string>> ReadRangeRecordIdsAsync(
+        JsonColdStoreEntityDescriptor descriptor,
+        JsonColdStoreIndexDescriptor index,
+        object indexValue,
+        ExpressionType operatorType,
+        CancellationToken cancellationToken)
+    {
+        var buckets = await _indexStore.ReadBucketsAsync(
+            descriptor.EntityName,
+            index.StorageName,
+            cancellationToken);
+
+        return buckets
+            .Where(bucket => ShouldReadRangeBucket(index, bucket.Key, indexValue, operatorType))
+            .SelectMany(bucket => bucket.Value)
+            .Where(recordId => !string.IsNullOrWhiteSpace(recordId))
+            .Distinct(StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+    }
+
+    private async Task<IReadOnlyList<TEntity>> ReadCurrentRecordIdsAndLegacyAsync<TEntity>(
+        JsonColdStoreEntityDescriptor descriptor,
+        IEnumerable<string> recordIds,
+        CancellationToken cancellationToken)
+        where TEntity : class
+    {
+        var results = new List<TEntity>();
+        var seenRecordIds = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var recordId in recordIds)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!_session.Records.RecordExists(descriptor.EntityName, recordId))
+                continue;
+
+            var payload = await _session.Records.ReadRecordAsync(
+                descriptor.EntityName,
+                recordId,
+                cancellationToken);
+            var entity = JsonSerializer.Deserialize<TEntity>(payload, EntityReadJsonOptions);
+            if (entity is not null)
+            {
+                seenRecordIds.Add(recordId);
+                results.Add(entity);
+            }
+        }
+
+        await foreach (var legacyRecord in _session.LegacyRecords.ReadAllRecordsAsync(
+            descriptor,
+            cancellationToken))
+        {
+            if (!seenRecordIds.Add(legacyRecord.RecordId))
+                continue;
+
+            var entity = JsonSerializer.Deserialize<TEntity>(
+                legacyRecord.Payload,
+                EntityReadJsonOptions);
+            if (entity is not null)
+                results.Add(entity);
+        }
+
+        return results;
+    }
+
+    private static bool ShouldReadRangeBucket(
+        JsonColdStoreIndexDescriptor index,
+        string bucketKey,
+        object indexValue,
+        ExpressionType operatorType)
+    {
+        if (string.Equals(bucketKey, "<null>", StringComparison.Ordinal))
+            return false;
+
+        var propertyType = index.Properties[0].PropertyType;
+        if (!TryConvertRangeOperand(bucketKey, propertyType, out var bucketValue))
+            return true;
+        if (!TryConvertRangeOperand(indexValue, propertyType, out var comparisonValue))
+            return true;
+
+        var comparison = bucketValue.CompareTo(comparisonValue);
+        return operatorType switch
+        {
+            ExpressionType.GreaterThan => comparison > 0,
+            ExpressionType.GreaterThanOrEqual => comparison >= 0,
+            ExpressionType.LessThan => comparison < 0,
+            ExpressionType.LessThanOrEqual => comparison <= 0,
+            _ => true,
+        };
+    }
+
+    private static bool TryConvertRangeOperand(
+        object? value,
+        Type propertyType,
+        out IComparable comparable)
+    {
+        comparable = default!;
+        if (value is null)
+            return false;
+
+        var targetType = Nullable.GetUnderlyingType(propertyType) ?? propertyType;
+        var text = Convert.ToString(value, CultureInfo.InvariantCulture);
+        if (string.Equals(text, "<null>", StringComparison.Ordinal))
+            return false;
+
+        try
+        {
+            object converted;
+            if (targetType == typeof(DateTime))
+            {
+                converted = value is DateTime dateTime
+                    ? dateTime
+                    : DateTime.Parse(text!, CultureInfo.InvariantCulture);
+            }
+            else if (targetType == typeof(DateTimeOffset))
+            {
+                converted = value is DateTimeOffset dateTimeOffset
+                    ? dateTimeOffset
+                    : DateTimeOffset.Parse(text!, CultureInfo.InvariantCulture);
+            }
+            else if (targetType == typeof(Guid))
+            {
+                converted = value is Guid guid
+                    ? guid
+                    : Guid.Parse(text!);
+            }
+            else if (targetType.IsEnum)
+            {
+                converted = value is string enumText
+                    ? Enum.Parse(targetType, enumText)
+                    : Enum.ToObject(targetType, value);
+            }
+            else
+            {
+                converted = value.GetType() == targetType
+                    ? value
+                    : Convert.ChangeType(value, targetType, CultureInfo.InvariantCulture);
+            }
+
+            if (converted is not IComparable convertedComparable)
+                return false;
+
+            comparable = convertedComparable;
+            return true;
+        }
+        catch (Exception ex) when (ex is ArgumentException or FormatException or InvalidCastException or OverflowException)
+        {
+            return false;
+        }
     }
 
     private static object VerifyPayload(

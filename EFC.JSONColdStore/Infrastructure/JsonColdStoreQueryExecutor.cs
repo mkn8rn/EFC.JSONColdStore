@@ -410,8 +410,10 @@ internal static class JsonColdStoreQueryExecutor
 
         if (range is not null)
         {
-            var indexed = await entityStore.ReadEntitiesByIndexedPropertyAsync<TEntity>(
+            var indexed = await entityStore.ReadEntitiesByIndexedRangeAsync<TEntity>(
                     range.PropertyName,
+                    range.Value!,
+                    range.OperatorType,
                     cancellationToken)
                 .ConfigureAwait(false);
             return indexed.ToList();

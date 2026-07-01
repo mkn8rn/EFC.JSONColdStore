@@ -2126,6 +2126,43 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
     }
 
     [Fact]
+    public async Task LinqRangeSkipsOutOfRangeIndexBucketsBeforeMaterializingRecords()
+    {
+        var directory = TestDirectory("query-range-bucket-prune-" + Guid.NewGuid().ToString("N"));
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(
+            directory,
+            store => store
+                .UseFsyncOnWrite(false)
+                .UseChecksums(verifyOnStartup: true, verifyOnRead: true));
+        using var context = new WritableDbContext(builder.Options);
+        var corruptId = Guid.Parse("83000000-0000-0000-0000-000000000009");
+        var expectedId = Guid.Parse("83000000-0000-0000-0000-000000000010");
+        context.Entities.AddRange(
+            new WritableEntity
+            {
+                Id = corruptId,
+                Value = "corrupt-out-of-range",
+                Score = 1,
+            },
+            new WritableEntity
+            {
+                Id = expectedId,
+                Value = "range-hit",
+                Score = 20,
+            });
+        context.SaveChanges();
+        await CorruptStoredRecordAsync(directory, corruptId);
+
+        var ids = context.Entities
+            .Where(entity => entity.Score >= 10)
+            .Select(entity => entity.Id)
+            .ToList();
+
+        Assert.Equal([expectedId], ids);
+    }
+
+    [Fact]
     public async Task LinqRangeThrowsWhenDeclaredIndexFileIsMissing()
     {
         var directory = TestDirectory("query-range-missing-index-" + Guid.NewGuid().ToString("N"));
