@@ -404,16 +404,12 @@ internal static class JsonColdStoreQueryExecutor
             return indexed.ToList();
         }
 
-        var range = plan.Filters
-            .Select(filter => TryCreateRange(queryContext, filter))
-            .FirstOrDefault(candidate => candidate is not null && CanUseIndexedRange(entityDescriptor, candidate));
-
+        var range = TryCreateRangeCandidate(queryContext, entityDescriptor, plan);
         if (range is not null)
         {
             var indexed = await entityStore.ReadEntitiesByIndexedRangeAsync<TEntity>(
                     range.PropertyName,
-                    range.Value!,
-                    range.OperatorType,
+                    range.Constraints,
                     cancellationToken)
                 .ConfigureAwait(false);
             return indexed.ToList();
@@ -508,6 +504,29 @@ internal static class JsonColdStoreQueryExecutor
         return filterSeek is not null
             && string.Equals(filterSeek.PropertyName, seek.PropertyName, StringComparison.Ordinal)
             && ValuesEqual(filterSeek.Value, seek.Value);
+    }
+
+    private static JsonColdStoreQueryRangeCandidate? TryCreateRangeCandidate(
+        QueryContext queryContext,
+        JsonColdStoreEntityDescriptor entityDescriptor,
+        JsonColdStoreQueryPlan plan)
+    {
+        var indexedRanges = plan.Filters
+            .Select(filter => TryCreateRange(queryContext, filter))
+            .Where(range => range is not null && CanUseIndexedRange(entityDescriptor, range))
+            .Cast<JsonColdStoreQueryRange>()
+            .GroupBy(range => range.PropertyName, StringComparer.Ordinal)
+            .OrderByDescending(group => group.Count())
+            .FirstOrDefault();
+
+        if (indexedRanges is null)
+            return null;
+
+        var constraints = indexedRanges
+            .Select(range => new JsonColdStoreRangeConstraint(range.Value!, range.OperatorType))
+            .ToArray();
+
+        return new JsonColdStoreQueryRangeCandidate(indexedRanges.Key, constraints);
     }
 
     private static Func<TEntity, bool> CreatePredicate<TEntity>(
@@ -878,6 +897,10 @@ internal sealed record JsonColdStoreQueryRange(
     string PropertyName,
     object? Value,
     ExpressionType OperatorType);
+
+internal sealed record JsonColdStoreQueryRangeCandidate(
+    string PropertyName,
+    IReadOnlyList<JsonColdStoreRangeConstraint> Constraints);
 
 internal enum JsonColdStoreQueryTerminal
 {

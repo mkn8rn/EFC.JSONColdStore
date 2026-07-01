@@ -2163,6 +2163,45 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
     }
 
     [Fact]
+    public async Task LinqRangeCombinesBoundsBeforeMaterializingRecords()
+    {
+        var directory = TestDirectory("query-range-combined-prune-" + Guid.NewGuid().ToString("N"));
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(
+            directory,
+            store => store
+                .UseFsyncOnWrite(false)
+                .UseChecksums(verifyOnStartup: true, verifyOnRead: true));
+        using var context = new WritableDbContext(builder.Options);
+        var expectedId = Guid.Parse("83000000-0000-0000-0000-000000000011");
+        var corruptHighId = Guid.Parse("83000000-0000-0000-0000-000000000012");
+        context.Entities.AddRange(
+            new WritableEntity
+            {
+                Id = expectedId,
+                Value = "bounded-range-hit",
+                Score = 15,
+            },
+            new WritableEntity
+            {
+                Id = corruptHighId,
+                Value = "corrupt-above-range",
+                Score = 30,
+            });
+        context.SaveChanges();
+        await CorruptStoredRecordAsync(directory, corruptHighId);
+        var minimum = 10;
+        var maximum = 20;
+
+        var ids = context.Entities
+            .Where(entity => entity.Score >= minimum && entity.Score < maximum)
+            .Select(entity => entity.Id)
+            .ToList();
+
+        Assert.Equal([expectedId], ids);
+    }
+
+    [Fact]
     public async Task LinqRangeThrowsWhenDeclaredIndexFileIsMissing()
     {
         var directory = TestDirectory("query-range-missing-index-" + Guid.NewGuid().ToString("N"));

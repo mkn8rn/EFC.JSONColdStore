@@ -221,11 +221,14 @@ internal sealed class JsonColdStoreEntityRecordStore
 
     internal async Task<IReadOnlyList<TEntity>> ReadEntitiesByIndexedRangeAsync<TEntity>(
         string propertyName,
-        object indexValue,
-        ExpressionType operatorType,
+        IReadOnlyList<JsonColdStoreRangeConstraint> constraints,
         CancellationToken cancellationToken = default)
         where TEntity : class
     {
+        ArgumentNullException.ThrowIfNull(constraints);
+        if (constraints.Count == 0)
+            throw new ArgumentException("At least one range constraint is required.", nameof(constraints));
+
         var descriptor = _modelDescriptor.FindEntity(typeof(TEntity));
         var index = descriptor.FindSinglePropertyIndex(propertyName);
         await EnsureModelCatalogAsync(createIfMissing: false, cancellationToken);
@@ -234,8 +237,7 @@ internal sealed class JsonColdStoreEntityRecordStore
         var recordIds = await ReadRangeRecordIdsAsync(
             descriptor,
             index,
-            indexValue,
-            operatorType,
+            constraints,
             cancellationToken);
         return await ReadCurrentRecordIdsAndLegacyAsync<TEntity>(
             descriptor,
@@ -522,8 +524,7 @@ internal sealed class JsonColdStoreEntityRecordStore
     private async Task<IReadOnlyList<string>> ReadRangeRecordIdsAsync(
         JsonColdStoreEntityDescriptor descriptor,
         JsonColdStoreIndexDescriptor index,
-        object indexValue,
-        ExpressionType operatorType,
+        IReadOnlyList<JsonColdStoreRangeConstraint> constraints,
         CancellationToken cancellationToken)
     {
         var buckets = await _indexStore.ReadBucketsAsync(
@@ -532,7 +533,7 @@ internal sealed class JsonColdStoreEntityRecordStore
             cancellationToken);
 
         return buckets
-            .Where(bucket => ShouldReadRangeBucket(index, bucket.Key, indexValue, operatorType))
+            .Where(bucket => ShouldReadRangeBucket(index, bucket.Key, constraints))
             .SelectMany(bucket => bucket.Value)
             .Where(recordId => !string.IsNullOrWhiteSpace(recordId))
             .Distinct(StringComparer.Ordinal)
@@ -587,8 +588,7 @@ internal sealed class JsonColdStoreEntityRecordStore
     private static bool ShouldReadRangeBucket(
         JsonColdStoreIndexDescriptor index,
         string bucketKey,
-        object indexValue,
-        ExpressionType operatorType)
+        IReadOnlyList<JsonColdStoreRangeConstraint> constraints)
     {
         if (string.Equals(bucketKey, "<null>", StringComparison.Ordinal))
             return false;
@@ -596,11 +596,22 @@ internal sealed class JsonColdStoreEntityRecordStore
         var propertyType = index.Properties[0].PropertyType;
         if (!TryConvertRangeOperand(bucketKey, propertyType, out var bucketValue))
             return true;
-        if (!TryConvertRangeOperand(indexValue, propertyType, out var comparisonValue))
-            return true;
 
-        var comparison = bucketValue.CompareTo(comparisonValue);
-        return operatorType switch
+        foreach (var constraint in constraints)
+        {
+            if (!TryConvertRangeOperand(constraint.IndexValue, propertyType, out var comparisonValue))
+                return true;
+
+            var comparison = bucketValue.CompareTo(comparisonValue);
+            if (!SatisfiesRangeConstraint(comparison, constraint.OperatorType))
+                return false;
+        }
+
+        return true;
+    }
+
+    private static bool SatisfiesRangeConstraint(int comparison, ExpressionType operatorType) =>
+        operatorType switch
         {
             ExpressionType.GreaterThan => comparison > 0,
             ExpressionType.GreaterThanOrEqual => comparison >= 0,
@@ -608,7 +619,6 @@ internal sealed class JsonColdStoreEntityRecordStore
             ExpressionType.LessThanOrEqual => comparison <= 0,
             _ => true,
         };
-    }
 
     private static bool TryConvertRangeOperand(
         object? value,
@@ -981,3 +991,7 @@ internal sealed record JsonColdStoreEntityVerificationResult(
     int VerifiedIndexes);
 
 internal sealed record JsonColdStoreVerifiedEntityRecord(string RecordId, object Entity);
+
+internal sealed record JsonColdStoreRangeConstraint(
+    object IndexValue,
+    ExpressionType OperatorType);
