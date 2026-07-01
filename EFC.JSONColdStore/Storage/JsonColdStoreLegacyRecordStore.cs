@@ -68,9 +68,13 @@ internal sealed class JsonColdStoreLegacyRecordStore
             if (fileName.StartsWith('_'))
                 continue;
 
+            var recordId = Path.GetFileNameWithoutExtension(fileName);
+            if (!IsSafeLegacyRecordId(recordId))
+                continue;
+
             var bytes = await JsonColdStoreFileReader.ReadAllBytesAsync(_options, file, cancellationToken);
             yield return new JsonColdStoreLegacyRecord(
-                Path.GetFileNameWithoutExtension(fileName),
+                recordId,
                 Decode(bytes));
         }
     }
@@ -204,6 +208,8 @@ internal sealed class JsonColdStoreLegacyRecordStore
     private static bool IsSafeLegacyRecordId(string? recordId)
     {
         if (string.IsNullOrWhiteSpace(recordId))
+            return false;
+        if (recordId is "." or "..")
             return false;
         if (recordId.StartsWith('_'))
             return false;
