@@ -134,7 +134,7 @@ internal sealed class JsonColdStoreDatabaseCreator : IDatabaseCreator
             _options.DatabaseDirectory,
             JsonColdStoreCatalog.StoreFileName);
         if (File.Exists(storeFilePath))
-            return await CanLoadStoreMetadataAsync(cancellationToken).ConfigureAwait(false);
+            return await CanLoadCurrentStoreAsync(cancellationToken).ConfigureAwait(false);
 
         var modelDescriptor = JsonColdStoreModelDescriptor.Create(_currentDbContext.Context.Model);
         var legacyRecords = new JsonColdStoreLegacyRecordStore(_options);
@@ -152,13 +152,25 @@ internal sealed class JsonColdStoreDatabaseCreator : IDatabaseCreator
         return false;
     }
 
-    private async Task<bool> CanLoadStoreMetadataAsync(CancellationToken cancellationToken)
+    private async Task<bool> CanLoadCurrentStoreAsync(CancellationToken cancellationToken)
     {
         try
         {
             var catalog = new JsonColdStoreCatalog(_options);
-            await catalog.LoadAndValidateAsync(cancellationToken).ConfigureAwait(false);
-            return true;
+            var metadata = await catalog.LoadAndValidateAsync(cancellationToken).ConfigureAwait(false);
+            var modelFilePath = JsonColdStorePathValidator.GetSafeChildPath(
+                _options.DatabaseDirectory,
+                JsonColdStoreModelCatalog.ModelFileName);
+            if (!File.Exists(modelFilePath))
+                return true;
+
+            var modelCatalog = new JsonColdStoreModelCatalog(
+                _options,
+                metadata.Policy.EncryptionEnabled);
+            return await modelCatalog.EnsureCompatibleAsync(
+                JsonColdStoreModelDescriptor.Create(_currentDbContext.Context.Model),
+                createIfMissing: false,
+                cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex) when (IsConnectionProbeFailure(ex))
         {

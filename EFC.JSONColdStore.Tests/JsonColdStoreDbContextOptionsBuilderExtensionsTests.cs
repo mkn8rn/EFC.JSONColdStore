@@ -115,6 +115,37 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
     }
 
     [Fact]
+    public void CanConnectReturnsFalseForInvalidModelCatalog()
+    {
+        var directory = TestDirectory("can-connect-invalid-model-" + Guid.NewGuid().ToString("N"));
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+        using var context = new WritableDbContext(builder.Options);
+        context.Database.EnsureCreated();
+        File.WriteAllText(Path.Combine(directory, "_model.json"), "not json");
+
+        Assert.False(context.Database.CanConnect());
+    }
+
+    [Fact]
+    public void CanConnectReturnsFalseForChangedModelCatalog()
+    {
+        var directory = TestDirectory("can-connect-model-mismatch-" + Guid.NewGuid().ToString("N"));
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+        using (var context = new WritableDbContext(builder.Options))
+        {
+            context.Database.EnsureCreated();
+        }
+
+        var changedBuilder = new DbContextOptionsBuilder<WritableDbContextWithoutIndex>();
+        changedBuilder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+        using var changedContext = new WritableDbContextWithoutIndex(changedBuilder.Options);
+
+        Assert.False(changedContext.Database.CanConnect());
+    }
+
+    [Fact]
     public async Task CanConnectReturnsTrueForLegacyEntityDirectory()
     {
         var directory = TestDirectory("can-connect-legacy-" + Guid.NewGuid().ToString("N"));
