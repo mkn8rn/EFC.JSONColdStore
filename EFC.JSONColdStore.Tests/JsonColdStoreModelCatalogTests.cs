@@ -66,6 +66,30 @@ public sealed class JsonColdStoreModelCatalogTests
         Assert.Contains("property type count", exception.Message);
     }
 
+    [Fact]
+    public async Task EnsureCompatibleAsyncReadsPlaintextCatalogWhenProtectedDocumentsAreExpected()
+    {
+        var directory = TestDirectory("protected-read-plaintext-" + Guid.NewGuid().ToString("N"));
+        using var key = JsonColdStoreEncryptionKey.FromBytes(new byte[32]);
+        var options = new JsonColdStoreOptionsBuilder(directory)
+            .UseEncryptionKey(key)
+            .UseFsyncOnWrite(false)
+            .Build();
+        var descriptor = CreateDescriptor();
+        var plaintextCatalog = new JsonColdStoreModelCatalog(options, protectDocument: false);
+        await plaintextCatalog.EnsureCompatibleAsync(descriptor, createIfMissing: true);
+
+        var protectedCatalog = new JsonColdStoreModelCatalog(options, protectDocument: true);
+        var compatible = await protectedCatalog.EnsureCompatibleAsync(
+            descriptor,
+            createIfMissing: false);
+
+        Assert.True(compatible);
+        Assert.Contains(
+            "ModelCatalogEntity",
+            await File.ReadAllTextAsync(Path.Combine(directory, JsonColdStoreModelCatalog.ModelFileName)));
+    }
+
     private static async Task<(
         JsonColdStoreModelCatalog Catalog,
         JsonColdStoreModelDescriptor Descriptor,

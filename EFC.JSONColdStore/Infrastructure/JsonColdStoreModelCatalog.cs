@@ -105,7 +105,7 @@ internal sealed class JsonColdStoreModelCatalog
             : json.ToArray();
 
     private byte[] DecodeDocument(ReadOnlySpan<byte> bytes) =>
-        _protectDocument
+        _protectDocument && JsonColdStorePayloadCodec.IsEnvelope(bytes)
             ? JsonColdStorePayloadCodec.Decode(bytes, _options)
             : bytes.ToArray();
 
