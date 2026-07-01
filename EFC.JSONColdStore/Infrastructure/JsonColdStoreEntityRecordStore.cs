@@ -796,7 +796,7 @@ internal sealed class JsonColdStoreEntityRecordStore
                 }
 
                 if (_session.Records.RecordExists(descriptor.EntityName, currentRecordId))
-                    ThrowUniqueIndexConflict(descriptor, index, indexKey, currentRecordId);
+                    ThrowUniqueIndexConflict(descriptor, index);
             }
 
             await EnsureLegacyUniqueIndexAsync(
@@ -840,7 +840,7 @@ internal sealed class JsonColdStoreEntityRecordStore
                     }
 
                     if (_session.LegacyRecords.RecordExists(descriptor, legacyRecordId))
-                        ThrowUniqueIndexConflict(descriptor, index, indexKey, legacyRecordId);
+                        ThrowUniqueIndexConflict(descriptor, index);
                 }
 
                 return;
@@ -867,7 +867,7 @@ internal sealed class JsonColdStoreEntityRecordStore
                     indexKey,
                     StringComparison.Ordinal))
             {
-                ThrowUniqueIndexConflict(descriptor, index, indexKey, legacyRecord.RecordId);
+                ThrowUniqueIndexConflict(descriptor, index);
             }
         }
     }
@@ -895,13 +895,11 @@ internal sealed class JsonColdStoreEntityRecordStore
 
     private static void ThrowUniqueIndexConflict(
         JsonColdStoreEntityDescriptor descriptor,
-        JsonColdStoreIndexDescriptor index,
-        string indexKey,
-        string existingRecordId)
+        JsonColdStoreIndexDescriptor index)
     {
         throw new InvalidOperationException(
             $"The JSONColdStore unique index '{index.StorageName}' for entity '{descriptor.EntityName}' "
-            + $"already contains value '{indexKey}' on record '{existingRecordId}'.");
+            + "already contains the requested value.");
     }
 
     private async Task AddLegacyIndexResultsAsync<TEntity>(

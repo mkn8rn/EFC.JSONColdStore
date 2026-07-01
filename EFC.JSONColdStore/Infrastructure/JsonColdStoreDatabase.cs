@@ -184,7 +184,7 @@ internal sealed class JsonColdStoreDatabase : IDatabase
                 {
                     throw new InvalidOperationException(
                         $"The JSONColdStore unique index '{index.StorageName}' for entity "
-                        + $"'{write.Descriptor.EntityName}' contains duplicate value '{indexKey}' "
+                        + $"'{write.Descriptor.EntityName}' contains a duplicate value "
                         + "inside the current SaveChanges batch.");
                 }
 

@@ -517,25 +517,28 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
             context.Entities.Add(new WritableEntity
             {
                 Id = existingId,
-                Value = "duplicate",
+                Value = "current-sensitive-value",
             });
             context.SaveChanges();
             context.Entities.Add(new WritableEntity
             {
                 Id = duplicateId,
-                Value = "duplicate",
+                Value = "current-sensitive-value",
             });
 
             var exception = Assert.Throws<InvalidOperationException>(() => context.SaveChanges());
 
             Assert.Contains("unique index", exception.Message);
+            Assert.DoesNotContain("current-sensitive-value", exception.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain(existingId.ToString(), exception.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain(duplicateId.ToString(), exception.Message, StringComparison.Ordinal);
             Assert.False(File.Exists(CurrentRecordPath(directory, duplicateId)));
         }
 
         using var readContext = new UniqueWritableDbContext(builder.Options);
         var matches = await readContext.Database.ReadJsonColdStoreIndexAsync<WritableEntity>(
             nameof(WritableEntity.Value),
-            "duplicate");
+            "current-sensitive-value");
 
         Assert.Single(matches);
         Assert.Equal(existingId, matches[0].Id);
@@ -554,17 +557,20 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
             new WritableEntity
             {
                 Id = firstId,
-                Value = "batch-duplicate",
+                Value = "batch-sensitive-value",
             },
             new WritableEntity
             {
                 Id = secondId,
-                Value = "batch-duplicate",
+                Value = "batch-sensitive-value",
             });
 
         var exception = Assert.Throws<InvalidOperationException>(() => context.SaveChanges());
 
         Assert.Contains("unique index", exception.Message);
+        Assert.DoesNotContain("batch-sensitive-value", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(firstId.ToString(), exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(secondId.ToString(), exception.Message, StringComparison.Ordinal);
         Assert.False(File.Exists(CurrentRecordPath(directory, firstId)));
         Assert.False(File.Exists(CurrentRecordPath(directory, secondId)));
     }
@@ -584,7 +590,7 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
             setupContext.Entities.Add(new WritableEntity
             {
                 Id = existingId,
-                Value = "persisted",
+                Value = "persisted-sensitive-value",
             });
             setupContext.SaveChanges();
         }
@@ -600,12 +606,16 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
                 new WritableEntity
                 {
                     Id = duplicateId,
-                    Value = "persisted",
+                    Value = "persisted-sensitive-value",
                 });
 
             var exception = Assert.Throws<InvalidOperationException>(() => context.SaveChanges());
 
             Assert.Contains("unique index", exception.Message);
+            Assert.DoesNotContain("persisted-sensitive-value", exception.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain(existingId.ToString(), exception.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain(validId.ToString(), exception.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain(duplicateId.ToString(), exception.Message, StringComparison.Ordinal);
             Assert.False(File.Exists(CurrentRecordPath(directory, validId)));
             Assert.False(File.Exists(CurrentRecordPath(directory, duplicateId)));
         }
@@ -613,7 +623,7 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
         using var readContext = new UniqueWritableDbContext(builder.Options);
         var matches = await readContext.Database.ReadJsonColdStoreIndexAsync<WritableEntity>(
             nameof(WritableEntity.Value),
-            "persisted");
+            "persisted-sensitive-value");
 
         Assert.Single(matches);
         Assert.Equal(existingId, matches[0].Id);
@@ -712,24 +722,27 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
             new WritableEntity
             {
                 Id = existingId,
-                Value = "legacy-duplicate",
+                Value = "legacy-sensitive-value",
             });
         await WriteLegacyIndexAsync(
             directory,
             nameof(WritableEntity.Value),
-            "legacy-duplicate",
+            "legacy-sensitive-value",
             [existingId.ToString()]);
 
         using var context = new UniqueWritableDbContext(builder.Options);
         context.Entities.Add(new WritableEntity
         {
             Id = duplicateId,
-            Value = "legacy-duplicate",
+            Value = "legacy-sensitive-value",
         });
 
         var exception = Assert.Throws<InvalidOperationException>(() => context.SaveChanges());
 
         Assert.Contains("unique index", exception.Message);
+        Assert.DoesNotContain("legacy-sensitive-value", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(existingId.ToString(), exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(duplicateId.ToString(), exception.Message, StringComparison.Ordinal);
         Assert.False(File.Exists(CurrentRecordPath(directory, duplicateId)));
     }
 
