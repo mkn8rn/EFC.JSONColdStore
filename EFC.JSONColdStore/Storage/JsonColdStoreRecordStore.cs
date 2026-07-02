@@ -403,7 +403,7 @@ internal sealed class JsonColdStoreRecordStore
             "_transactions",
             "pending");
 
-        if (!Directory.Exists(pendingDirectory))
+        if (!RecoveryDirectoryExistsAndIsSafe("_transactions", "pending"))
         {
             var deletedOrphans = DeleteOrphanedStagedWrites(new HashSet<Guid>());
             return new JsonColdStoreRecoveryResult(0, 0, deletedOrphans);
@@ -428,6 +428,10 @@ internal sealed class JsonColdStoreRecordStore
                 throw;
             }
             catch (InvalidOperationException) when (_protectManifests)
+            {
+                throw;
+            }
+            catch (JsonColdStoreUnsafePathException)
             {
                 throw;
             }
@@ -526,15 +530,19 @@ internal sealed class JsonColdStoreRecordStore
             }
         }
 
-        var deletedOrphanedStagedWrites = DeleteOrphanedStagedWrites(ReadPendingManifestIds(pendingDirectory));
+        var deletedOrphanedStagedWrites = DeleteOrphanedStagedWrites(ReadPendingManifestIds());
         return new JsonColdStoreRecoveryResult(completed, failed, deletedOrphanedStagedWrites);
     }
 
-    private static HashSet<Guid> ReadPendingManifestIds(string pendingDirectory)
+    private HashSet<Guid> ReadPendingManifestIds()
     {
-        if (!Directory.Exists(pendingDirectory))
+        if (!RecoveryDirectoryExistsAndIsSafe("_transactions", "pending"))
             return [];
 
+        var pendingDirectory = JsonColdStorePathValidator.GetSafeChildPath(
+            _options.DatabaseDirectory,
+            "_transactions",
+            "pending");
         return Directory.EnumerateFiles(pendingDirectory, "*.json")
             .Select(path => Path.GetFileNameWithoutExtension(path))
             .Where(name => Guid.TryParseExact(name, "N", out _))
@@ -548,7 +556,7 @@ internal sealed class JsonColdStoreRecordStore
             _options.DatabaseDirectory,
             "_transactions",
             "staged");
-        if (!Directory.Exists(stagedDirectory))
+        if (!RecoveryDirectoryExistsAndIsSafe("_transactions", "staged"))
             return 0;
 
         var deleted = 0;
@@ -573,6 +581,9 @@ internal sealed class JsonColdStoreRecordStore
 
     private bool StagedPayloadExists(JsonColdStoreWriteManifest manifest)
     {
+        if (!RecoveryDirectoryExistsAndIsSafe(manifest.StagedPathSegments![..^1]))
+            return false;
+
         var stagedPath = JsonColdStorePathValidator.GetSafeChildPath(
             _options.DatabaseDirectory,
             [.. manifest.StagedPathSegments!]);
@@ -650,6 +661,53 @@ internal sealed class JsonColdStoreRecordStore
     internal static bool IsTransientReplayException(Exception exception) =>
         exception is IOException
         || (exception is UnauthorizedAccessException and not JsonColdStoreUnsafePathException);
+
+    private bool RecoveryDirectoryExistsAndIsSafe(params string[] directorySegments)
+    {
+        var currentSegments = new List<string>(directorySegments.Length);
+        foreach (var segment in directorySegments)
+        {
+            currentSegments.Add(segment);
+            var directory = JsonColdStorePathValidator.GetSafeChildPath(
+                _options.DatabaseDirectory,
+                [.. currentSegments]);
+
+            FileAttributes attributes;
+            try
+            {
+                attributes = File.GetAttributes(directory);
+            }
+            catch (FileNotFoundException)
+            {
+                return false;
+            }
+            catch (DirectoryNotFoundException)
+            {
+                return false;
+            }
+            catch (IOException)
+            {
+                throw new JsonColdStoreUnsafePathException(
+                    "The JSONColdStore transaction recovery directory cannot be safely inspected.");
+            }
+            catch (UnauthorizedAccessException)
+            {
+                throw new JsonColdStoreUnsafePathException(
+                    "The JSONColdStore transaction recovery directory cannot be safely inspected.");
+            }
+
+            if ((attributes & FileAttributes.Directory) == 0)
+                return false;
+
+            if ((attributes & FileAttributes.ReparsePoint) != 0)
+            {
+                throw new JsonColdStoreUnsafePathException(
+                    "The JSONColdStore transaction recovery directory cannot be a reparse point.");
+            }
+        }
+
+        return true;
+    }
 
     private void CreateSafeTargetDirectory(IReadOnlyList<string> targetPathSegments)
     {

@@ -796,6 +796,176 @@ public sealed class JsonColdStoreRecordStoreTests
     }
 
     [Fact]
+    public async Task RecoverPendingManifestsRejectsReparsePointPendingDirectory()
+    {
+        var root = NewTempDirectory();
+        var outside = NewTempDirectory();
+        var options = new JsonColdStoreOptionsBuilder(root)
+            .UseCompression(JsonColdStoreCompression.None)
+            .UseFsyncOnWrite(false)
+            .Build();
+        var store = new JsonColdStoreRecordStore(options);
+        var pendingDirectory = Path.Combine(root, "_transactions", "pending");
+        var outsideManifest = Path.Combine(outside, "outside.json");
+        Directory.CreateDirectory(Path.Combine(root, "_transactions"));
+        await File.WriteAllTextAsync(outsideManifest, "outside pending payload");
+        JsonColdStoreReparsePointTestHelper.CreateRequiredDirectoryLink(
+            pendingDirectory,
+            outside,
+            nameof(RecoverPendingManifestsRejectsReparsePointPendingDirectory));
+
+        var exception = await Assert.ThrowsAsync<JsonColdStoreUnsafePathException>(
+            () => store.RecoverPendingManifestsAsync());
+
+        AssertRedactedTransactionRecoveryException(
+            exception,
+            root,
+            pendingDirectory,
+            outsideManifest,
+            "outside pending payload");
+        Assert.Equal("outside pending payload", await File.ReadAllTextAsync(outsideManifest));
+        Assert.False(Directory.Exists(Path.Combine(root, "_transactions", "failed")));
+    }
+
+    [Fact]
+    public async Task RecoverPendingManifestsRejectsReparsePointPendingManifestFile()
+    {
+        var root = NewTempDirectory();
+        var outside = NewTempDirectory();
+        var options = new JsonColdStoreOptionsBuilder(root)
+            .UseCompression(JsonColdStoreCompression.None)
+            .UseFsyncOnWrite(false)
+            .Build();
+        var store = new JsonColdStoreRecordStore(options);
+        var manifestId = Guid.NewGuid();
+        var pendingManifestPath = ManifestPath(root, manifestId);
+        var outsideManifest = Path.Combine(outside, manifestId.ToString("N") + ".json");
+        Directory.CreateDirectory(Path.GetDirectoryName(pendingManifestPath)!);
+        await File.WriteAllTextAsync(outsideManifest, "outside pending manifest payload");
+        JsonColdStoreReparsePointTestHelper.CreateRequiredFileLink(
+            pendingManifestPath,
+            outsideManifest,
+            nameof(RecoverPendingManifestsRejectsReparsePointPendingManifestFile));
+
+        var exception = await Assert.ThrowsAsync<JsonColdStoreUnsafePathException>(
+            () => store.RecoverPendingManifestsAsync());
+
+        Assert.Contains("file read target", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(root, exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(pendingManifestPath, exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(outsideManifest, exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("outside pending manifest payload", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.True(File.Exists(pendingManifestPath));
+        Assert.False(File.Exists(Path.Combine(root, "_transactions", "failed", manifestId.ToString("N") + ".json")));
+        Assert.Equal("outside pending manifest payload", await File.ReadAllTextAsync(outsideManifest));
+    }
+
+    [Fact]
+    public async Task RecoverPendingManifestsRejectsReparsePointStagedDirectoryDuringWriteReplay()
+    {
+        var root = NewTempDirectory();
+        var outside = NewTempDirectory();
+        var options = new JsonColdStoreOptionsBuilder(root)
+            .UseCompression(JsonColdStoreCompression.None)
+            .UseFsyncOnWrite(false)
+            .Build();
+        var store = new JsonColdStoreRecordStore(options);
+        var targetSegments = JsonColdStoreRecordStore.GetRecordPathSegments("Entity", "linked-staged");
+        var encodedPayload = JsonColdStorePayloadCodec.Encode("payload"u8, options);
+        var manifest = JsonColdStoreWriteManifest.CreateStagedWrite(
+            targetSegments,
+            encodedPayload.Length);
+        await WriteManifestAsync(root, manifest);
+        Directory.CreateDirectory(outside);
+        var outsideStagedPayload = Path.Combine(outside, manifest.ManifestId.ToString("N") + ".jcs");
+        await File.WriteAllBytesAsync(outsideStagedPayload, encodedPayload);
+        var stagedDirectory = Path.Combine(root, "_transactions", "staged");
+        JsonColdStoreReparsePointTestHelper.CreateRequiredDirectoryLink(
+            stagedDirectory,
+            outside,
+            nameof(RecoverPendingManifestsRejectsReparsePointStagedDirectoryDuringWriteReplay));
+
+        var exception = await Assert.ThrowsAsync<JsonColdStoreUnsafePathException>(
+            () => store.RecoverPendingManifestsAsync());
+
+        AssertRedactedTransactionRecoveryException(
+            exception,
+            root,
+            stagedDirectory,
+            outsideStagedPayload,
+            "payload");
+        Assert.True(File.Exists(ManifestPath(root, manifest.ManifestId)));
+        Assert.True(File.Exists(outsideStagedPayload));
+        Assert.False(File.Exists(JsonColdStorePathValidator.GetSafeChildPath(root, [.. targetSegments])));
+    }
+
+    [Fact]
+    public async Task RecoverPendingManifestsRejectsReparsePointStagedDirectoryDuringOrphanCleanup()
+    {
+        var root = NewTempDirectory();
+        var outside = NewTempDirectory();
+        var options = new JsonColdStoreOptionsBuilder(root)
+            .UseCompression(JsonColdStoreCompression.None)
+            .UseFsyncOnWrite(false)
+            .Build();
+        var store = new JsonColdStoreRecordStore(options);
+        var stagedDirectory = Path.Combine(root, "_transactions", "staged");
+        var outsideStagedPayload = Path.Combine(outside, "orphaned.jcs");
+        Directory.CreateDirectory(Path.Combine(root, "_transactions"));
+        await File.WriteAllTextAsync(outsideStagedPayload, "outside staged orphan");
+        JsonColdStoreReparsePointTestHelper.CreateRequiredDirectoryLink(
+            stagedDirectory,
+            outside,
+            nameof(RecoverPendingManifestsRejectsReparsePointStagedDirectoryDuringOrphanCleanup));
+
+        var exception = await Assert.ThrowsAsync<JsonColdStoreUnsafePathException>(
+            () => store.RecoverPendingManifestsAsync());
+
+        AssertRedactedTransactionRecoveryException(
+            exception,
+            root,
+            stagedDirectory,
+            outsideStagedPayload,
+            "outside staged orphan");
+        Assert.Equal("outside staged orphan", await File.ReadAllTextAsync(outsideStagedPayload));
+    }
+
+    [Fact]
+    public async Task RecoverPendingManifestsReturnsEmptyWhenPendingDirectoryIsMissing()
+    {
+        var root = NewTempDirectory();
+        var options = new JsonColdStoreOptionsBuilder(root)
+            .UseCompression(JsonColdStoreCompression.None)
+            .UseFsyncOnWrite(false)
+            .Build();
+        var store = new JsonColdStoreRecordStore(options);
+
+        var result = await store.RecoverPendingManifestsAsync();
+
+        Assert.Equal(0, result.CompletedManifests);
+        Assert.Equal(0, result.FailedManifests);
+        Assert.Equal(0, result.DeletedOrphanedStagedWrites);
+    }
+
+    [Fact]
+    public async Task RecoverPendingManifestsReturnsEmptyWhenPendingDirectoryIsEmpty()
+    {
+        var root = NewTempDirectory();
+        var options = new JsonColdStoreOptionsBuilder(root)
+            .UseCompression(JsonColdStoreCompression.None)
+            .UseFsyncOnWrite(false)
+            .Build();
+        var store = new JsonColdStoreRecordStore(options);
+        Directory.CreateDirectory(Path.Combine(root, "_transactions", "pending"));
+
+        var result = await store.RecoverPendingManifestsAsync();
+
+        Assert.Equal(0, result.CompletedManifests);
+        Assert.Equal(0, result.FailedManifests);
+        Assert.Equal(0, result.DeletedOrphanedStagedWrites);
+    }
+
+    [Fact]
     public async Task RecoverPendingManifestsDeletesOrphanedStagedWriteWithoutManifest()
     {
         var root = NewTempDirectory();
@@ -817,6 +987,28 @@ public sealed class JsonColdStoreRecordStoreTests
         Assert.Equal(0, result.FailedManifests);
         Assert.Equal(1, result.DeletedOrphanedStagedWrites);
         Assert.False(File.Exists(StagedPath(root, orphanedManifestId)));
+    }
+
+    [Fact]
+    public async Task RecoverPendingManifestsDeletesNonGuidOrphanedStagedWrite()
+    {
+        var root = NewTempDirectory();
+        var options = new JsonColdStoreOptionsBuilder(root)
+            .UseCompression(JsonColdStoreCompression.None)
+            .UseFsyncOnWrite(false)
+            .Build();
+        var store = new JsonColdStoreRecordStore(options);
+        var stagedDirectory = Path.Combine(root, "_transactions", "staged");
+        Directory.CreateDirectory(stagedDirectory);
+        var stagedPath = Path.Combine(stagedDirectory, "not-a-guid.jcs");
+        await File.WriteAllTextAsync(stagedPath, "orphaned");
+
+        var result = await store.RecoverPendingManifestsAsync();
+
+        Assert.Equal(0, result.CompletedManifests);
+        Assert.Equal(0, result.FailedManifests);
+        Assert.Equal(1, result.DeletedOrphanedStagedWrites);
+        Assert.False(File.Exists(stagedPath));
     }
 
     [Fact]
@@ -864,15 +1056,23 @@ public sealed class JsonColdStoreRecordStoreTests
             .UseFsyncOnWrite(false)
             .Build();
         var store = new JsonColdStoreRecordStore(readOptions, protectManifests: true);
-        var manifest = JsonColdStoreWriteManifest.CreateWrite(
-            JsonColdStoreRecordStore.GetRecordPathSegments("Entity", "wrong-key"),
-            payloadLength: 7);
+        var targetSegments = JsonColdStoreRecordStore.GetRecordPathSegments("Entity", "wrong-key");
+        var encodedPayload = JsonColdStorePayloadCodec.Encode("payload"u8, writeOptions);
+        var manifest = JsonColdStoreWriteManifest.CreateStagedWrite(
+            targetSegments,
+            encodedPayload.Length);
+        await JsonColdStoreAtomicFileWriter.WriteAsync(
+            root,
+            manifest.StagedPathSegments!,
+            encodedPayload,
+            fsync: false);
         await WriteManifestAsync(root, manifest, writeOptions, protect: true);
 
         await Assert.ThrowsAnyAsync<CryptographicException>(
             () => store.RecoverPendingManifestsAsync());
 
         Assert.True(File.Exists(ManifestPath(root, manifest.ManifestId)));
+        Assert.True(File.Exists(StagedPath(root, manifest.ManifestId)));
         Assert.False(File.Exists(Path.Combine(
             root,
             "_transactions",
@@ -891,6 +1091,50 @@ public sealed class JsonColdStoreRecordStoreTests
         var store = new JsonColdStoreRecordStore(options);
         var manifest = JsonColdStoreWriteManifest.CreateWrite(
             JsonColdStoreRecordStore.GetRecordPathSegments("Missing", "1"),
+            payloadLength: 7);
+        await WriteManifestAsync(root, manifest);
+
+        var result = await store.RecoverPendingManifestsAsync();
+
+        Assert.Equal(0, result.CompletedManifests);
+        Assert.Equal(1, result.FailedManifests);
+        Assert.False(File.Exists(ManifestPath(root, manifest.ManifestId)));
+        Assert.True(File.Exists(Path.Combine(root, "_transactions", "failed", manifest.ManifestId.ToString("N") + ".json")));
+    }
+
+    [Fact]
+    public async Task RecoverPendingManifestsMovesCorruptManifestToFailed()
+    {
+        var root = NewTempDirectory();
+        var options = new JsonColdStoreOptionsBuilder(root)
+            .UseCompression(JsonColdStoreCompression.None)
+            .UseFsyncOnWrite(false)
+            .Build();
+        var store = new JsonColdStoreRecordStore(options);
+        var manifestId = Guid.NewGuid();
+        var manifestPath = ManifestPath(root, manifestId);
+        Directory.CreateDirectory(Path.GetDirectoryName(manifestPath)!);
+        await File.WriteAllTextAsync(manifestPath, "not json");
+
+        var result = await store.RecoverPendingManifestsAsync();
+
+        Assert.Equal(0, result.CompletedManifests);
+        Assert.Equal(1, result.FailedManifests);
+        Assert.False(File.Exists(manifestPath));
+        Assert.True(File.Exists(Path.Combine(root, "_transactions", "failed", manifestId.ToString("N") + ".json")));
+    }
+
+    [Fact]
+    public async Task RecoverPendingManifestsMovesStagedWriteWithMissingPayloadToFailed()
+    {
+        var root = NewTempDirectory();
+        var options = new JsonColdStoreOptionsBuilder(root)
+            .UseCompression(JsonColdStoreCompression.None)
+            .UseFsyncOnWrite(false)
+            .Build();
+        var store = new JsonColdStoreRecordStore(options);
+        var manifest = JsonColdStoreWriteManifest.CreateStagedWrite(
+            JsonColdStoreRecordStore.GetRecordPathSegments("Missing", "staged"),
             payloadLength: 7);
         await WriteManifestAsync(root, manifest);
 
@@ -1085,6 +1329,15 @@ public sealed class JsonColdStoreRecordStoreTests
             "entities",
             JsonColdStoreNameEncoder.EncodePathSegment(entityName),
             "records");
+
+    private static void AssertRedactedTransactionRecoveryException(
+        JsonColdStoreUnsafePathException exception,
+        params string[] forbiddenValues)
+    {
+        Assert.Contains("transaction recovery directory", exception.Message, StringComparison.OrdinalIgnoreCase);
+        foreach (var forbiddenValue in forbiddenValues)
+            Assert.DoesNotContain(forbiddenValue, exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
 
     private static async Task<string> ReadOnlyEventLogTextAsync(string root)
     {
