@@ -71,6 +71,11 @@ internal sealed class JsonColdStoreDatabaseCreator : IDatabaseCreator
             await catalog.LoadAndValidateAsync(cancellationToken).ConfigureAwait(false);
 
             cancellationToken.ThrowIfCancellationRequested();
+            JsonColdStoreDirectoryGuard.ThrowIfContainsReparsePoint(
+                databaseDirectory,
+                cancellationToken);
+
+            cancellationToken.ThrowIfCancellationRequested();
             Directory.Delete(databaseDirectory, recursive: true);
         }
         finally

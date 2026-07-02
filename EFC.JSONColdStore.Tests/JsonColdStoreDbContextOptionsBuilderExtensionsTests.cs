@@ -492,6 +492,69 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
     }
 
     [Fact]
+    public async Task EnsureDeletedRejectsReparsePointChildDirectory()
+    {
+        var directory = TestDirectory("ensure-deleted-linked-child-" + Guid.NewGuid().ToString("N"));
+        var outside = TestDirectory("ensure-deleted-linked-child-target-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outside);
+        var outsideFile = Path.Combine(outside, "outside.txt");
+        await File.WriteAllTextAsync(outsideFile, "outside child");
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+        using var context = new WritableDbContext(builder.Options);
+        context.Database.EnsureCreated();
+        var linkParent = Path.Combine(directory, "entities");
+        Directory.CreateDirectory(linkParent);
+        var link = Path.Combine(linkParent, "linked-child");
+        JsonColdStoreReparsePointTestHelper.CreateRequiredDirectoryLink(
+            link,
+            outside,
+            nameof(EnsureDeletedRejectsReparsePointChildDirectory));
+
+        var exception = await Assert.ThrowsAsync<JsonColdStoreUnsafePathException>(
+            () => context.Database.EnsureDeletedAsync());
+
+        Assert.Contains("reparse point", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(directory, exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(link, exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(outside, exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.True(Directory.Exists(directory));
+        Assert.True(Directory.Exists(link));
+        Assert.Equal("outside child", await File.ReadAllTextAsync(outsideFile));
+        Assert.Single(Directory.EnumerateFileSystemEntries(outside));
+    }
+
+    [Fact]
+    public async Task EnsureDeletedRejectsReparsePointChildFile()
+    {
+        var directory = TestDirectory("ensure-deleted-linked-file-" + Guid.NewGuid().ToString("N"));
+        var outside = TestDirectory("ensure-deleted-linked-file-target-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outside);
+        var outsideFile = Path.Combine(outside, "outside-file.jcs");
+        await File.WriteAllTextAsync(outsideFile, "outside file");
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+        using var context = new WritableDbContext(builder.Options);
+        context.Database.EnsureCreated();
+        var link = Path.Combine(directory, "linked-file.jcs");
+        JsonColdStoreReparsePointTestHelper.CreateRequiredFileLink(
+            link,
+            outsideFile,
+            nameof(EnsureDeletedRejectsReparsePointChildFile));
+
+        var exception = await Assert.ThrowsAsync<JsonColdStoreUnsafePathException>(
+            () => context.Database.EnsureDeletedAsync());
+
+        Assert.Contains("reparse point", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(directory, exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(link, exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(outsideFile, exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.True(Directory.Exists(directory));
+        Assert.True(File.Exists(link));
+        Assert.Equal("outside file", await File.ReadAllTextAsync(outsideFile));
+    }
+
+    [Fact]
     public void EnsureCreatedRejectsReparsePointDatabaseRoot()
     {
         var parent = TestDirectory("ensure-created-reparse-parent-" + Guid.NewGuid().ToString("N"));
