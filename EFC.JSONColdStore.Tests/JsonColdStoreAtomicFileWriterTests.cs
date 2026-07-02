@@ -1,4 +1,5 @@
 using EFC.JSONColdStore.Storage;
+using System.Diagnostics;
 
 namespace EFC.JSONColdStore.Tests;
 
@@ -58,6 +59,64 @@ public sealed class JsonColdStoreAtomicFileWriterTests
                 ["..", "escaped.jcs"],
                 "nope"u8.ToArray(),
                 fsync: false));
+    }
+
+    [Fact]
+    public async Task WriteAsyncRejectsEmptyPathSegments()
+    {
+        var root = NewTempDirectory();
+
+        await Assert.ThrowsAsync<ArgumentException>(
+            () => JsonColdStoreAtomicFileWriter.WriteAsync(
+                root,
+                [],
+                "nope"u8.ToArray(),
+                fsync: false));
+    }
+
+    [Fact]
+    public async Task WriteAsyncWithOptionsRejectsReparsePointChildDirectory()
+    {
+        var root = NewTempDirectory();
+        var outside = NewTempDirectory();
+        if (!JsonColdStoreReparsePointTestHelper.TryCreateDirectoryLink(
+                Path.Combine(root, "Entity"),
+                outside))
+        {
+            return;
+        }
+
+        var options = new JsonColdStoreOptionsBuilder(root)
+            .UseFsyncOnWrite(false)
+            .UseFlushRetry(maxRetries: 5, baseDelay: TimeSpan.FromSeconds(5))
+            .Build();
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+        var stopwatch = Stopwatch.StartNew();
+
+        var exception = await Assert.ThrowsAnyAsync<UnauthorizedAccessException>(
+            () => JsonColdStoreAtomicFileWriter.WriteAsync(
+                options,
+                ["Entity", "record.jcs"],
+                "nope"u8.ToArray(),
+                cancellation.Token));
+
+        stopwatch.Stop();
+        Assert.IsType<JsonColdStoreUnsafePathException>(exception);
+        Assert.Contains("reparse-point", exception.Message);
+        Assert.False(cancellation.IsCancellationRequested);
+        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(2));
+        Assert.Empty(Directory.EnumerateFileSystemEntries(outside));
+    }
+
+    [Fact]
+    public void IsTransientWriteExceptionDoesNotRetryUnsafePathFailures()
+    {
+        Assert.False(JsonColdStoreAtomicFileWriter.IsTransientWriteException(
+            new JsonColdStoreUnsafePathException("unsafe")));
+        Assert.True(JsonColdStoreAtomicFileWriter.IsTransientWriteException(
+            new IOException("transient")));
+        Assert.True(JsonColdStoreAtomicFileWriter.IsTransientWriteException(
+            new UnauthorizedAccessException("transient")));
     }
 
     private static string NewTempDirectory()

@@ -10,10 +10,17 @@ internal static class JsonColdStoreAtomicFileWriter
     {
         ArgumentNullException.ThrowIfNull(options);
 
-        var targetPath = ResolvePath(options.DatabaseDirectory, pathSegments);
+        var segments = MaterializePathSegments(pathSegments);
+        var targetPath = ResolvePath(options.DatabaseDirectory, segments);
         return JsonColdStoreRetryPolicy.ExecuteAsync(
             options.FlushRetry,
-            token => WriteResolvedPathAsync(targetPath, data, options.FsyncOnWrite, token),
+            token => WriteResolvedPathAsync(
+                options.DatabaseDirectory,
+                segments,
+                targetPath,
+                data,
+                options.FsyncOnWrite,
+                token),
             IsTransientWriteException,
             cancellationToken);
     }
@@ -25,19 +32,28 @@ internal static class JsonColdStoreAtomicFileWriter
         bool fsync,
         CancellationToken cancellationToken = default)
     {
-        var targetPath = ResolvePath(databaseDirectory, pathSegments);
-        await WriteResolvedPathAsync(targetPath, data, fsync, cancellationToken);
+        var segments = MaterializePathSegments(pathSegments);
+        var targetPath = ResolvePath(databaseDirectory, segments);
+        await WriteResolvedPathAsync(
+            databaseDirectory,
+            segments,
+            targetPath,
+            data,
+            fsync,
+            cancellationToken);
     }
 
     private static async Task WriteResolvedPathAsync(
+        string databaseDirectory,
+        IReadOnlyList<string> pathSegments,
         string targetPath,
         ReadOnlyMemory<byte> data,
         bool fsync,
         CancellationToken cancellationToken)
     {
-        var directory = Path.GetDirectoryName(targetPath)
-            ?? throw new InvalidOperationException("The target path has no directory.");
-        Directory.CreateDirectory(directory);
+        CreateSafeTargetDirectory(databaseDirectory, pathSegments);
+        if (File.Exists(targetPath) && JsonColdStoreDirectoryWalker.IsReparsePoint(targetPath))
+            throw UnsafePath("The target file cannot be a reparse point.");
 
         var tempPath = targetPath + ".tmp-" + Guid.NewGuid().ToString("N");
         try
@@ -90,8 +106,58 @@ internal static class JsonColdStoreAtomicFileWriter
         return JsonColdStorePathValidator.GetSafeChildPath(databaseDirectory, [.. pathSegments]);
     }
 
-    private static bool IsTransientWriteException(Exception exception) =>
-        exception is IOException or UnauthorizedAccessException;
+    private static string[] MaterializePathSegments(IEnumerable<string> pathSegments)
+    {
+        ArgumentNullException.ThrowIfNull(pathSegments);
+
+        var segments = pathSegments.ToArray();
+        if (segments.Length == 0)
+            throw new ArgumentException("At least one target path segment is required.", nameof(pathSegments));
+
+        return segments;
+    }
+
+    private static void CreateSafeTargetDirectory(
+        string databaseDirectory,
+        IReadOnlyList<string> pathSegments)
+    {
+        var root = JsonColdStorePathValidator.NormalizeDatabaseDirectory(databaseDirectory);
+        Directory.CreateDirectory(root);
+
+        if (pathSegments.Count == 1)
+            return;
+
+        var directorySegments = new List<string>(pathSegments.Count - 1);
+        foreach (var segment in pathSegments.Take(pathSegments.Count - 1))
+        {
+            directorySegments.Add(segment);
+            var directory = JsonColdStorePathValidator.GetSafeChildPath(
+                root,
+                [.. directorySegments]);
+            if (Directory.Exists(directory))
+            {
+                if (JsonColdStoreDirectoryWalker.IsReparsePoint(directory))
+                    throw UnsafePath(
+                        "The target directory cannot contain reparse-point child directories.");
+
+                continue;
+            }
+
+            Directory.CreateDirectory(directory);
+            if (JsonColdStoreDirectoryWalker.IsReparsePoint(directory))
+            {
+                throw UnsafePath(
+                    "The target directory cannot contain reparse-point child directories.");
+            }
+        }
+    }
+
+    internal static bool IsTransientWriteException(Exception exception) =>
+        exception is IOException
+        || (exception is UnauthorizedAccessException and not JsonColdStoreUnsafePathException);
+
+    private static JsonColdStoreUnsafePathException UnsafePath(string message) =>
+        new(message);
 
     private static void TryDeleteTempFile(string tempPath)
     {
@@ -108,3 +174,6 @@ internal static class JsonColdStoreAtomicFileWriter
         }
     }
 }
+
+internal sealed class JsonColdStoreUnsafePathException(string message)
+    : UnauthorizedAccessException(message);
