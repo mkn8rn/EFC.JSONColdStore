@@ -30,10 +30,9 @@ internal sealed class JsonColdStoreDatabaseLock : IDisposable
     {
         ArgumentNullException.ThrowIfNull(options);
 
-        var lockDirectory = JsonColdStorePathValidator.GetSafeChildPath(
+        JsonColdStoreDirectoryGuard.CreateDirectory(
             options.DatabaseDirectory,
             LockDirectoryName);
-        Directory.CreateDirectory(lockDirectory);
 
         var lockPath = JsonColdStorePathValidator.GetSafeChildPath(
             options.DatabaseDirectory,

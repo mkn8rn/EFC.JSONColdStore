@@ -121,35 +121,15 @@ internal static class JsonColdStoreAtomicFileWriter
         string databaseDirectory,
         IReadOnlyList<string> pathSegments)
     {
-        var root = JsonColdStorePathValidator.NormalizeDatabaseDirectory(databaseDirectory);
-        Directory.CreateDirectory(root);
-
         if (pathSegments.Count == 1)
-            return;
-
-        var directorySegments = new List<string>(pathSegments.Count - 1);
-        foreach (var segment in pathSegments.Take(pathSegments.Count - 1))
         {
-            directorySegments.Add(segment);
-            var directory = JsonColdStorePathValidator.GetSafeChildPath(
-                root,
-                [.. directorySegments]);
-            if (Directory.Exists(directory))
-            {
-                if (JsonColdStoreDirectoryWalker.IsReparsePoint(directory))
-                    throw UnsafePath(
-                        "The target directory cannot contain reparse-point child directories.");
-
-                continue;
-            }
-
-            Directory.CreateDirectory(directory);
-            if (JsonColdStoreDirectoryWalker.IsReparsePoint(directory))
-            {
-                throw UnsafePath(
-                    "The target directory cannot contain reparse-point child directories.");
-            }
+            JsonColdStoreDirectoryGuard.CreateDirectory(databaseDirectory);
+            return;
         }
+
+        JsonColdStoreDirectoryGuard.CreateDirectory(
+            databaseDirectory,
+            [.. pathSegments.Take(pathSegments.Count - 1)]);
     }
 
     internal static bool IsTransientWriteException(Exception exception) =>
@@ -174,6 +154,3 @@ internal static class JsonColdStoreAtomicFileWriter
         }
     }
 }
-
-internal sealed class JsonColdStoreUnsafePathException(string message)
-    : UnauthorizedAccessException(message);

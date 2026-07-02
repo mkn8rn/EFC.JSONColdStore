@@ -122,6 +122,30 @@ public sealed class JsonColdStoreRecordStoreTests
     }
 
     [Fact]
+    public async Task WriteRecordAsyncSkipsReparsePointEventLogDirectory()
+    {
+        var root = NewTempDirectory();
+        var outside = NewTempDirectory();
+        if (!JsonColdStoreReparsePointTestHelper.TryCreateDirectoryLink(
+                Path.Combine(root, "_events"),
+                outside))
+        {
+            return;
+        }
+
+        var options = new JsonColdStoreOptionsBuilder(root)
+            .UseEventLog(enabled: true, TimeSpan.FromDays(7))
+            .UseFsyncOnWrite(false)
+            .Build();
+        var store = new JsonColdStoreRecordStore(options);
+
+        await store.WriteRecordAsync("Entity", "event-reparse", "payload"u8.ToArray());
+
+        Assert.True(store.RecordExists("Entity", "event-reparse"));
+        Assert.Empty(Directory.EnumerateFileSystemEntries(outside));
+    }
+
+    [Fact]
     public async Task WriteRecordAsyncProtectsEncryptedEventLogDetails()
     {
         var root = NewTempDirectory();
@@ -270,6 +294,38 @@ public sealed class JsonColdStoreRecordStoreTests
 
         Assert.False(File.Exists(expiredFile));
         Assert.Single(Directory.GetFiles(quarantineDirectory, "*.jcs"));
+    }
+
+    [Fact]
+    public async Task ReadRecordAsyncRejectsReparsePointQuarantineDirectory()
+    {
+        var root = NewTempDirectory();
+        var outside = NewTempDirectory();
+        var options = new JsonColdStoreOptionsBuilder(root)
+            .UseCompression(JsonColdStoreCompression.None)
+            .UseChecksums(verifyOnStartup: true, verifyOnRead: true)
+            .UseFsyncOnWrite(false)
+            .Build();
+        var store = new JsonColdStoreRecordStore(options);
+        await store.WriteRecordAsync("Entity", "quarantine-reparse", "payload"u8.ToArray());
+        var recordPath = JsonColdStorePathValidator.GetSafeChildPath(
+            root,
+            [.. JsonColdStoreRecordStore.GetRecordPathSegments("Entity", "quarantine-reparse")]);
+        var bytes = await File.ReadAllBytesAsync(recordPath);
+        bytes[^1] ^= 0x7F;
+        await File.WriteAllBytesAsync(recordPath, bytes);
+        if (!JsonColdStoreReparsePointTestHelper.TryCreateDirectoryLink(
+                Path.Combine(root, "_quarantine"),
+                outside))
+        {
+            return;
+        }
+
+        await Assert.ThrowsAsync<JsonColdStoreUnsafePathException>(
+            () => store.ReadRecordAsync("Entity", "quarantine-reparse"));
+
+        Assert.True(store.RecordExists("Entity", "quarantine-reparse"));
+        Assert.Empty(Directory.EnumerateFileSystemEntries(outside));
     }
 
     [Fact]
@@ -553,6 +609,36 @@ public sealed class JsonColdStoreRecordStoreTests
         Assert.Equal(1, result.FailedManifests);
         Assert.False(File.Exists(ManifestPath(root, manifest.ManifestId)));
         Assert.True(File.Exists(Path.Combine(root, "_transactions", "failed", manifest.ManifestId.ToString("N") + ".json")));
+    }
+
+    [Fact]
+    public async Task RecoverPendingManifestsRejectsReparsePointFailedDirectory()
+    {
+        var root = NewTempDirectory();
+        var outside = NewTempDirectory();
+        var options = new JsonColdStoreOptionsBuilder(root)
+            .UseCompression(JsonColdStoreCompression.None)
+            .UseFsyncOnWrite(false)
+            .UseTransactionReplay(maxRetries: 5)
+            .Build();
+        var store = new JsonColdStoreRecordStore(options);
+        var manifest = JsonColdStoreWriteManifest.CreateWrite(
+            JsonColdStoreRecordStore.GetRecordPathSegments("Missing", "1"),
+            payloadLength: 7);
+        await WriteManifestAsync(root, manifest);
+        Directory.CreateDirectory(Path.Combine(root, "_transactions"));
+        if (!JsonColdStoreReparsePointTestHelper.TryCreateDirectoryLink(
+                Path.Combine(root, "_transactions", "failed"),
+                outside))
+        {
+            return;
+        }
+
+        await Assert.ThrowsAsync<JsonColdStoreUnsafePathException>(
+            () => store.RecoverPendingManifestsAsync());
+
+        Assert.True(File.Exists(ManifestPath(root, manifest.ManifestId)));
+        Assert.Empty(Directory.EnumerateFileSystemEntries(outside));
     }
 
     [Fact]

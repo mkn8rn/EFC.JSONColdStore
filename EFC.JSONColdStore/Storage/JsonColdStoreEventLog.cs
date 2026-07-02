@@ -75,10 +75,9 @@ internal sealed class JsonColdStoreEventLog
             Detail = detail,
         };
         var line = CreateLine(entry);
-        var eventsDirectory = JsonColdStorePathValidator.GetSafeChildPath(
+        var eventsDirectory = JsonColdStoreDirectoryGuard.CreateDirectory(
             _options.DatabaseDirectory,
             "_events");
-        Directory.CreateDirectory(eventsDirectory);
 
         var eventFile = JsonColdStorePathValidator.GetSafeChildPath(
             eventsDirectory,

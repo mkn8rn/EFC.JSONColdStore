@@ -590,7 +590,8 @@ internal sealed class JsonColdStoreRecordStore
             cancellationToken);
 
     private static bool IsTransientReplayException(Exception exception) =>
-        exception is IOException or UnauthorizedAccessException;
+        exception is IOException
+        || (exception is UnauthorizedAccessException and not JsonColdStoreUnsafePathException);
 
     private void RequireStorageMutations()
     {
@@ -646,11 +647,10 @@ internal sealed class JsonColdStoreRecordStore
 
     private void MoveManifestToFailed(string manifestPath)
     {
-        var failedDirectory = JsonColdStorePathValidator.GetSafeChildPath(
+        var failedDirectory = JsonColdStoreDirectoryGuard.CreateDirectory(
             _options.DatabaseDirectory,
             "_transactions",
             "failed");
-        Directory.CreateDirectory(failedDirectory);
 
         var failedPath = Path.Combine(failedDirectory, Path.GetFileName(manifestPath));
         File.Move(manifestPath, failedPath, overwrite: true);
@@ -664,11 +664,10 @@ internal sealed class JsonColdStoreRecordStore
         if (!File.Exists(recordPath))
             return;
 
-        var quarantineDirectory = JsonColdStorePathValidator.GetSafeChildPath(
+        var quarantineDirectory = JsonColdStoreDirectoryGuard.CreateDirectory(
             _options.DatabaseDirectory,
             "_quarantine",
             "records");
-        Directory.CreateDirectory(quarantineDirectory);
 
         var quarantinedAt = DateTimeOffset.UtcNow;
         var quarantineFileName =
