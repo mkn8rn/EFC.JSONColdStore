@@ -120,11 +120,11 @@ internal sealed class JsonColdStoreDiagnosticsStore
         var legacyDirectory = JsonColdStorePathValidator.GetSafeChildPath(
             _options.DatabaseDirectory,
             descriptor.ClrType.Name);
-        if (!Directory.Exists(legacyDirectory))
-            return 0;
 
-        return Directory.EnumerateFiles(legacyDirectory, "*.json")
-            .Count(JsonColdStoreLegacyRecordNames.IsSafeRecordFile);
+        return CountFilesInDirectory(
+            legacyDirectory,
+            "*.json",
+            JsonColdStoreLegacyRecordNames.IsSafeRecordFile);
     }
 
     private int CountFiles(params string[] pathSegmentsAndPattern)
@@ -138,9 +138,7 @@ internal sealed class JsonColdStoreDiagnosticsStore
             _options.DatabaseDirectory,
             directorySegments);
 
-        return Directory.Exists(directory)
-            ? Directory.EnumerateFiles(directory, pattern).Count()
-            : 0;
+        return CountFilesInDirectory(directory, pattern);
     }
 
     private int CountDirectories(params string[] pathSegments)
@@ -149,10 +147,72 @@ internal sealed class JsonColdStoreDiagnosticsStore
             _options.DatabaseDirectory,
             pathSegments);
 
-        return Directory.Exists(directory)
-            ? Directory.EnumerateDirectories(directory)
-                .Count(directory => !JsonColdStoreDirectoryWalker.IsReparsePoint(directory))
-            : 0;
+        if (!DirectoryExistsAndIsSafe(directory))
+            return 0;
+
+        try
+        {
+            return Directory.EnumerateDirectories(directory)
+                .Count(directory => !JsonColdStoreDirectoryWalker.IsReparsePoint(directory));
+        }
+        catch (IOException)
+        {
+            return 0;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return 0;
+        }
+    }
+
+    private static int CountFilesInDirectory(
+        string directory,
+        string pattern,
+        Func<string, bool>? shouldCountFile = null)
+    {
+        if (!DirectoryExistsAndIsSafe(directory))
+            return 0;
+
+        try
+        {
+            return Directory.EnumerateFiles(directory, pattern)
+                .Count(file => !JsonColdStoreDirectoryWalker.IsReparsePoint(file)
+                    && (shouldCountFile?.Invoke(file) ?? true));
+        }
+        catch (IOException)
+        {
+            return 0;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return 0;
+        }
+    }
+
+    private static bool DirectoryExistsAndIsSafe(string directory)
+    {
+        try
+        {
+            var attributes = File.GetAttributes(directory);
+            return (attributes & FileAttributes.Directory) != 0
+                && (attributes & FileAttributes.ReparsePoint) == 0;
+        }
+        catch (FileNotFoundException)
+        {
+            return false;
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return false;
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 
     private static int CountTemporaryFiles(string directory)

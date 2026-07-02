@@ -1690,6 +1690,121 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
     }
 
     [Fact]
+    public async Task GetJsonColdStoreDiagnosticsAsyncCountsNormalMaintenanceDirectories()
+    {
+        var directory = TestDirectory("diagnostics-normal-maintenance-" + Guid.NewGuid().ToString("N"));
+        await WriteTextFileAsync(Path.Combine(directory, "_transactions", "pending", "pending.json"), "pending");
+        await WriteTextFileAsync(Path.Combine(directory, "_transactions", "failed", "failed.json"), "failed");
+        await WriteTextFileAsync(Path.Combine(directory, "_transactions", "staged", "staged.jcs"), "staged");
+        await WriteTextFileAsync(Path.Combine(directory, "_quarantine", "records", "record.jcs"), "quarantine");
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+
+        using var context = new WritableDbContext(builder.Options);
+        var diagnostics = await context.Database.GetJsonColdStoreDiagnosticsAsync();
+
+        Assert.Equal(1, diagnostics.PendingManifestCount);
+        Assert.Equal(1, diagnostics.FailedManifestCount);
+        Assert.Equal(1, diagnostics.StagedWriteCount);
+        Assert.Equal(1, diagnostics.QuarantineFileCount);
+        Assert.False(File.Exists(Path.Combine(directory, "_store.json")));
+        Assert.False(File.Exists(Path.Combine(directory, "_model.json")));
+    }
+
+    [Fact]
+    public async Task GetJsonColdStoreDiagnosticsAsyncSkipsReparsePointCounterDirectories()
+    {
+        var directory = TestDirectory("diagnostics-linked-counters-" + Guid.NewGuid().ToString("N"));
+        var outside = TestDirectory("diagnostics-linked-counters-outside-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        Directory.CreateDirectory(outside);
+        var entitySegment = JsonColdStoreNameEncoder.EncodePathSegment(typeof(WritableEntity).FullName!);
+        var outsideRecord = await CreateRequiredLinkedDirectoryWithFileAsync(
+            Path.Combine(directory, "entities", entitySegment, "records"),
+            Path.Combine(outside, "records"),
+            "outside.jcs",
+            "outside record",
+            nameof(GetJsonColdStoreDiagnosticsAsyncSkipsReparsePointCounterDirectories));
+        var outsideIndex = await CreateRequiredLinkedDirectoryWithFileAsync(
+            Path.Combine(directory, "entities", entitySegment, "indexes"),
+            Path.Combine(outside, "indexes"),
+            "outside.json",
+            "outside index",
+            nameof(GetJsonColdStoreDiagnosticsAsyncSkipsReparsePointCounterDirectories));
+        var outsideLegacy = await CreateRequiredLinkedDirectoryWithFileAsync(
+            Path.Combine(directory, nameof(WritableEntity)),
+            Path.Combine(outside, "legacy"),
+            "53000000-0000-0000-0000-000000000004.json",
+            "outside legacy",
+            nameof(GetJsonColdStoreDiagnosticsAsyncSkipsReparsePointCounterDirectories));
+        var outsidePending = await CreateRequiredLinkedDirectoryWithFileAsync(
+            Path.Combine(directory, "_transactions", "pending"),
+            Path.Combine(outside, "pending"),
+            "pending.json",
+            "outside pending",
+            nameof(GetJsonColdStoreDiagnosticsAsyncSkipsReparsePointCounterDirectories));
+        var outsideFailed = await CreateRequiredLinkedDirectoryWithFileAsync(
+            Path.Combine(directory, "_transactions", "failed"),
+            Path.Combine(outside, "failed"),
+            "failed.json",
+            "outside failed",
+            nameof(GetJsonColdStoreDiagnosticsAsyncSkipsReparsePointCounterDirectories));
+        var outsideStaged = await CreateRequiredLinkedDirectoryWithFileAsync(
+            Path.Combine(directory, "_transactions", "staged"),
+            Path.Combine(outside, "staged"),
+            "staged.jcs",
+            "outside staged",
+            nameof(GetJsonColdStoreDiagnosticsAsyncSkipsReparsePointCounterDirectories));
+        var outsideQuarantine = await CreateRequiredLinkedDirectoryWithFileAsync(
+            Path.Combine(directory, "_quarantine", "records"),
+            Path.Combine(outside, "quarantine"),
+            "record.jcs",
+            "outside quarantine",
+            nameof(GetJsonColdStoreDiagnosticsAsyncSkipsReparsePointCounterDirectories));
+        var outsideEvent = await CreateRequiredLinkedDirectoryWithFileAsync(
+            Path.Combine(directory, "_events"),
+            Path.Combine(outside, "events"),
+            "20260702.jsonl",
+            "outside event",
+            nameof(GetJsonColdStoreDiagnosticsAsyncSkipsReparsePointCounterDirectories));
+        var outsideSnapshots = Path.Combine(outside, "snapshots");
+        Directory.CreateDirectory(Path.Combine(outsideSnapshots, "outside-snapshot"));
+        JsonColdStoreReparsePointTestHelper.CreateRequiredDirectoryLink(
+            Path.Combine(directory, "_snapshots"),
+            outsideSnapshots,
+            nameof(GetJsonColdStoreDiagnosticsAsyncSkipsReparsePointCounterDirectories));
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+
+        using var context = new WritableDbContext(builder.Options);
+        var diagnostics = await context.Database.GetJsonColdStoreDiagnosticsAsync();
+
+        Assert.Equal(0, diagnostics.RecordFileCount);
+        Assert.Equal(0, diagnostics.IndexFileCount);
+        Assert.Equal(0, diagnostics.LegacyRecordFileCount);
+        Assert.Equal(0, diagnostics.PendingManifestCount);
+        Assert.Equal(0, diagnostics.FailedManifestCount);
+        Assert.Equal(0, diagnostics.StagedWriteCount);
+        Assert.Equal(0, diagnostics.QuarantineFileCount);
+        Assert.Equal(0, diagnostics.EventLogFileCount);
+        Assert.Equal(0, diagnostics.SnapshotCount);
+        Assert.Equal(0, diagnostics.Entities[0].RecordFileCount);
+        Assert.Equal(0, diagnostics.Entities[0].IndexFileCount);
+        Assert.Equal(0, diagnostics.Entities[0].LegacyRecordFileCount);
+        Assert.Equal("outside record", await File.ReadAllTextAsync(outsideRecord));
+        Assert.Equal("outside index", await File.ReadAllTextAsync(outsideIndex));
+        Assert.Equal("outside legacy", await File.ReadAllTextAsync(outsideLegacy));
+        Assert.Equal("outside pending", await File.ReadAllTextAsync(outsidePending));
+        Assert.Equal("outside failed", await File.ReadAllTextAsync(outsideFailed));
+        Assert.Equal("outside staged", await File.ReadAllTextAsync(outsideStaged));
+        Assert.Equal("outside quarantine", await File.ReadAllTextAsync(outsideQuarantine));
+        Assert.Equal("outside event", await File.ReadAllTextAsync(outsideEvent));
+        Assert.True(Directory.Exists(Path.Combine(outsideSnapshots, "outside-snapshot")));
+        Assert.False(File.Exists(Path.Combine(directory, "_store.json")));
+        Assert.False(File.Exists(Path.Combine(directory, "_model.json")));
+    }
+
+    [Fact]
     public async Task GetJsonColdStoreDiagnosticsAsyncReportsConfiguredEncryptionWithoutMetadata()
     {
         var directory = TestDirectory("diagnostics-encryption-no-metadata-" + Guid.NewGuid().ToString("N"));
@@ -2943,6 +3058,30 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
             [.. JsonColdStoreRecordStore.GetRecordPathSegments(
                 entityName,
                 recordId)]);
+
+    private static async Task WriteTextFileAsync(string path, string contents)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        await File.WriteAllTextAsync(path, contents);
+    }
+
+    private static async Task<string> CreateRequiredLinkedDirectoryWithFileAsync(
+        string linkPath,
+        string targetPath,
+        string fileName,
+        string contents,
+        string proofName)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(linkPath)!);
+        Directory.CreateDirectory(targetPath);
+        var filePath = Path.Combine(targetPath, fileName);
+        await File.WriteAllTextAsync(filePath, contents);
+        JsonColdStoreReparsePointTestHelper.CreateRequiredDirectoryLink(
+            linkPath,
+            targetPath,
+            proofName);
+        return filePath;
+    }
 
     private static async Task WriteLegacyEntityAsync(
         string directory,
