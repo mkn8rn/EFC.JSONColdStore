@@ -443,6 +443,32 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
     }
 
     [Fact]
+    public async Task EnsureDeletedRejectsReparsePointDatabaseRoot()
+    {
+        var parent = TestDirectory("ensure-deleted-reparse-parent-" + Guid.NewGuid().ToString("N"));
+        var outside = TestDirectory("ensure-deleted-reparse-target-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(parent);
+        Directory.CreateDirectory(outside);
+        var link = Path.Combine(parent, "linked-store");
+        var outsideFile = Path.Combine(outside, "outside.txt");
+        await File.WriteAllTextAsync(outsideFile, "keep me");
+        if (!JsonColdStoreReparsePointTestHelper.TryCreateDirectoryLink(link, outside))
+            return;
+
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(link, store => store.UseFsyncOnWrite(false));
+        using var context = new WritableDbContext(builder.Options);
+
+        var exception = Assert.ThrowsAny<UnauthorizedAccessException>(
+            () => context.Database.EnsureDeleted());
+
+        Assert.Contains("reparse point", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.True(Directory.Exists(link));
+        Assert.True(File.Exists(outsideFile));
+        Assert.Single(Directory.EnumerateFileSystemEntries(outside));
+    }
+
+    [Fact]
     public void EnsureDeletedRejectsInvalidStoreMetadata()
     {
         var directory = TestDirectory("ensure-deleted-invalid-metadata-" + Guid.NewGuid().ToString("N"));

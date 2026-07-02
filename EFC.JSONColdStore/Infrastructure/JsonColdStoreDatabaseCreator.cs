@@ -37,6 +37,11 @@ internal sealed class JsonColdStoreDatabaseCreator : IDatabaseCreator
         var databaseDirectory = JsonColdStorePathValidator.GetSafeChildPath(_options.DatabaseDirectory);
         if (!Directory.Exists(databaseDirectory))
             return false;
+        if (JsonColdStoreDirectoryWalker.IsReparsePoint(databaseDirectory))
+        {
+            throw new UnauthorizedAccessException(
+                "Refusing to delete the configured JSONColdStore directory because it is a reparse point.");
+        }
 
         var storeFilePath = JsonColdStorePathValidator.GetSafeChildPath(
             _options.DatabaseDirectory,
