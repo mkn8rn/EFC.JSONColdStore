@@ -12,12 +12,10 @@ public sealed class JsonColdStoreTemporaryFileCleanerTests
         var outsideTemp = Path.Combine(outside, "outside.tmp-escape");
         await File.WriteAllTextAsync(outsideTemp, "outside");
 
-        if (!JsonColdStoreReparsePointTestHelper.TryCreateDirectoryLink(
+        JsonColdStoreReparsePointTestHelper.CreateRequiredDirectoryLink(
                 Path.Combine(root, "linked-outside"),
-                outside))
-        {
-            return;
-        }
+                outside,
+                nameof(DeleteOrphanedAtomicTempFilesSkipsReparsePointDirectories));
 
         var deleted = JsonColdStoreTemporaryFileCleaner.DeleteOrphanedAtomicTempFiles(root);
 

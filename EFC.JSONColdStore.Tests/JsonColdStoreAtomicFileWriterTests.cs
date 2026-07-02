@@ -79,12 +79,10 @@ public sealed class JsonColdStoreAtomicFileWriterTests
     {
         var root = NewTempDirectory();
         var outside = NewTempDirectory();
-        if (!JsonColdStoreReparsePointTestHelper.TryCreateDirectoryLink(
+        JsonColdStoreReparsePointTestHelper.CreateRequiredDirectoryLink(
                 Path.Combine(root, "Entity"),
-                outside))
-        {
-            return;
-        }
+                outside,
+                nameof(WriteAsyncWithOptionsRejectsReparsePointChildDirectory));
 
         var options = new JsonColdStoreOptionsBuilder(root)
             .UseFsyncOnWrite(false)

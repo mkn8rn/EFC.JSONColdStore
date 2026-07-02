@@ -126,12 +126,10 @@ public sealed class JsonColdStoreRecordStoreTests
     {
         var root = NewTempDirectory();
         var outside = NewTempDirectory();
-        if (!JsonColdStoreReparsePointTestHelper.TryCreateDirectoryLink(
+        JsonColdStoreReparsePointTestHelper.CreateRequiredDirectoryLink(
                 Path.Combine(root, "_events"),
-                outside))
-        {
-            return;
-        }
+                outside,
+                nameof(WriteRecordAsyncSkipsReparsePointEventLogDirectory));
 
         var options = new JsonColdStoreOptionsBuilder(root)
             .UseEventLog(enabled: true, TimeSpan.FromDays(7))
@@ -314,12 +312,10 @@ public sealed class JsonColdStoreRecordStoreTests
         var bytes = await File.ReadAllBytesAsync(recordPath);
         bytes[^1] ^= 0x7F;
         await File.WriteAllBytesAsync(recordPath, bytes);
-        if (!JsonColdStoreReparsePointTestHelper.TryCreateDirectoryLink(
+        JsonColdStoreReparsePointTestHelper.CreateRequiredDirectoryLink(
                 Path.Combine(root, "_quarantine"),
-                outside))
-        {
-            return;
-        }
+                outside,
+                nameof(ReadRecordAsyncRejectsReparsePointQuarantineDirectory));
 
         await Assert.ThrowsAsync<JsonColdStoreUnsafePathException>(
             () => store.ReadRecordAsync("Entity", "quarantine-reparse"));
@@ -526,12 +522,10 @@ public sealed class JsonColdStoreRecordStoreTests
             encodedPayload,
             fsync: false);
         await WriteManifestAsync(root, manifest);
-        var linkCreated = JsonColdStoreReparsePointTestHelper.TryCreateDirectoryLink(
+        JsonColdStoreReparsePointTestHelper.CreateRequiredDirectoryLink(
                 Path.Combine(root, "entities"),
-                outside);
-        Assert.True(
-            linkCreated,
-            "Unable to create the linked entities directory required for the replay escape proof.");
+                outside,
+                nameof(RecoverPendingManifestsRejectsReparsePointTargetDirectoryWithoutRetrying));
 
         await Assert.ThrowsAsync<JsonColdStoreUnsafePathException>(
             () => store.RecoverPendingManifestsAsync());
@@ -664,12 +658,10 @@ public sealed class JsonColdStoreRecordStoreTests
             payloadLength: 7);
         await WriteManifestAsync(root, manifest);
         Directory.CreateDirectory(Path.Combine(root, "_transactions"));
-        if (!JsonColdStoreReparsePointTestHelper.TryCreateDirectoryLink(
+        JsonColdStoreReparsePointTestHelper.CreateRequiredDirectoryLink(
                 Path.Combine(root, "_transactions", "failed"),
-                outside))
-        {
-            return;
-        }
+                outside,
+                nameof(RecoverPendingManifestsRejectsReparsePointFailedDirectory));
 
         await Assert.ThrowsAsync<JsonColdStoreUnsafePathException>(
             () => store.RecoverPendingManifestsAsync());

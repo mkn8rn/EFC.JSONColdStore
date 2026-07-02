@@ -12,19 +12,17 @@ public sealed class JsonColdStoreSnapshotStoreTests
         var outside = NewTempDirectory();
         await File.WriteAllTextAsync(Path.Combine(root, "_store.json"), "{}");
 
-        if (!JsonColdStoreReparsePointTestHelper.TryCreateDirectoryLink(
+        JsonColdStoreReparsePointTestHelper.CreateRequiredDirectoryLink(
                 Path.Combine(root, "_snapshots"),
-                outside))
-        {
-            return;
-        }
+                outside,
+                nameof(CreateSnapshotAsyncRejectsReparsePointSnapshotRoot));
 
         var options = new JsonColdStoreOptionsBuilder(root)
             .UseFsyncOnWrite(false)
             .Build();
         var snapshots = new JsonColdStoreSnapshotStore(options);
 
-        await Assert.ThrowsAsync<UnauthorizedAccessException>(
+        await Assert.ThrowsAsync<JsonColdStoreUnsafePathException>(
             () => snapshots.CreateSnapshotAsync());
 
         Assert.Empty(Directory.EnumerateFileSystemEntries(outside));
@@ -38,12 +36,10 @@ public sealed class JsonColdStoreSnapshotStoreTests
         await File.WriteAllTextAsync(Path.Combine(root, "_store.json"), "{}");
         await File.WriteAllTextAsync(Path.Combine(outside, "outside.txt"), "outside");
 
-        if (!JsonColdStoreReparsePointTestHelper.TryCreateDirectoryLink(
+        JsonColdStoreReparsePointTestHelper.CreateRequiredDirectoryLink(
                 Path.Combine(root, "linked-outside"),
-                outside))
-        {
-            return;
-        }
+                outside,
+                nameof(CreateSnapshotAsyncSkipsReparsePointDirectories));
 
         var options = new JsonColdStoreOptionsBuilder(root)
             .UseFsyncOnWrite(false)
@@ -77,6 +73,40 @@ public sealed class JsonColdStoreSnapshotStoreTests
         var snapshotRoot = Path.Combine(root, "_snapshots");
         Assert.True(Directory.Exists(snapshotRoot));
         Assert.Empty(Directory.EnumerateDirectories(snapshotRoot));
+    }
+
+    [Fact]
+    public async Task CreateSnapshotAsyncPrunesOnlyNonReparseSnapshotDirectories()
+    {
+        var root = NewTempDirectory();
+        var outside = NewTempDirectory();
+        await File.WriteAllTextAsync(Path.Combine(root, "_store.json"), "{}");
+        var snapshotRoot = Path.Combine(root, "_snapshots");
+        Directory.CreateDirectory(snapshotRoot);
+        var oldSnapshot = Path.Combine(snapshotRoot, "000000000000000000000-old");
+        Directory.CreateDirectory(oldSnapshot);
+        await File.WriteAllTextAsync(Path.Combine(oldSnapshot, "old.txt"), "old");
+        var linkedSnapshot = Path.Combine(snapshotRoot, "000000000000000000001-linked");
+        var outsideFile = Path.Combine(outside, "outside.txt");
+        await File.WriteAllTextAsync(outsideFile, "outside");
+        JsonColdStoreReparsePointTestHelper.CreateRequiredDirectoryLink(
+                linkedSnapshot,
+                outside,
+                nameof(CreateSnapshotAsyncPrunesOnlyNonReparseSnapshotDirectories));
+
+        var options = new JsonColdStoreOptionsBuilder(root)
+            .UseFsyncOnWrite(false)
+            .UseSnapshots(enabled: true, TimeSpan.FromHours(1), retentionCount: 1)
+            .Build();
+        var snapshots = new JsonColdStoreSnapshotStore(options);
+
+        var result = await snapshots.CreateSnapshotAsync();
+
+        Assert.Equal(1, result.DeletedSnapshots);
+        Assert.False(Directory.Exists(oldSnapshot));
+        Assert.True(Directory.Exists(linkedSnapshot));
+        Assert.True(File.Exists(outsideFile));
+        Assert.Single(Directory.EnumerateFileSystemEntries(outside));
     }
 
     private static string NewTempDirectory()

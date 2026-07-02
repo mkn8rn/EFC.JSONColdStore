@@ -452,8 +452,10 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
         var link = Path.Combine(parent, "linked-store");
         var outsideFile = Path.Combine(outside, "outside.txt");
         await File.WriteAllTextAsync(outsideFile, "keep me");
-        if (!JsonColdStoreReparsePointTestHelper.TryCreateDirectoryLink(link, outside))
-            return;
+        JsonColdStoreReparsePointTestHelper.CreateRequiredDirectoryLink(
+            link,
+            outside,
+            nameof(EnsureDeletedRejectsReparsePointDatabaseRoot));
 
         var builder = new DbContextOptionsBuilder<WritableDbContext>();
         builder.UseJsonColdStoreDatabase(link, store => store.UseFsyncOnWrite(false));

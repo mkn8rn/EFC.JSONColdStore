@@ -5,6 +5,22 @@ namespace EFC.JSONColdStore.Tests;
 
 internal static class JsonColdStoreReparsePointTestHelper
 {
+    internal static void CreateRequiredDirectoryLink(
+        string linkPath,
+        string targetPath,
+        string proofName)
+    {
+        var created = TryCreateDirectoryLink(linkPath, targetPath);
+        Assert.True(
+            created,
+            "Unable to create the linked directory required for "
+            + proofName
+            + ": "
+            + linkPath
+            + " -> "
+            + targetPath);
+    }
+
     internal static bool TryCreateDirectoryLink(string linkPath, string targetPath)
     {
         try

@@ -49,12 +49,10 @@ public sealed class JsonColdStoreDatabaseLockTests
     {
         var root = NewTempDirectory();
         var outside = NewTempDirectory();
-        if (!JsonColdStoreReparsePointTestHelper.TryCreateDirectoryLink(
+        JsonColdStoreReparsePointTestHelper.CreateRequiredDirectoryLink(
                 Path.Combine(root, JsonColdStoreDatabaseLock.LockDirectoryName),
-                outside))
-        {
-            return;
-        }
+                outside,
+                nameof(AcquireAsyncRejectsReparsePointLockDirectory));
 
         var options = new JsonColdStoreOptionsBuilder(root)
             .UseFsyncOnWrite(false)

@@ -17,22 +17,19 @@ internal sealed class JsonColdStoreSnapshotStore
     internal async Task<JsonColdStoreSnapshotResult> CreateSnapshotAsync(
         CancellationToken cancellationToken = default)
     {
-        var snapshotRoot = JsonColdStorePathValidator.GetSafeChildPath(
+        var snapshotRoot = JsonColdStoreDirectoryGuard.CreateDirectory(
             _options.DatabaseDirectory,
             SnapshotDirectoryName);
-        Directory.CreateDirectory(snapshotRoot);
-        if (JsonColdStoreDirectoryWalker.IsReparsePoint(snapshotRoot))
-            throw new UnauthorizedAccessException("The JSONColdStore snapshot directory cannot be a reparse point.");
 
         var snapshotName = DateTimeOffset.UtcNow.ToString(
             "yyyyMMddHHmmssfffffff",
             CultureInfo.InvariantCulture)
             + "-"
             + Guid.NewGuid().ToString("N");
-        var snapshotDirectory = JsonColdStorePathValidator.GetSafeChildPath(
-            snapshotRoot,
+        var snapshotDirectory = JsonColdStoreDirectoryGuard.CreateDirectory(
+            _options.DatabaseDirectory,
+            SnapshotDirectoryName,
             snapshotName);
-        Directory.CreateDirectory(snapshotDirectory);
 
         try
         {
@@ -41,13 +38,14 @@ internal sealed class JsonColdStoreSnapshotStore
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var relativePath = Path.GetRelativePath(_options.DatabaseDirectory, sourceFile);
+                var targetSegments = relativePath.Split(
+                    Path.DirectorySeparatorChar,
+                    Path.AltDirectorySeparatorChar);
                 var targetPath = JsonColdStorePathValidator.GetSafeChildPath(
                     snapshotDirectory,
-                    relativePath.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
-                var targetDirectory = Path.GetDirectoryName(targetPath)
-                    ?? throw new InvalidOperationException("The snapshot target path has no directory.");
+                    targetSegments);
 
-                Directory.CreateDirectory(targetDirectory);
+                CreateSafeSnapshotTargetDirectory(snapshotDirectory, targetSegments);
                 await CopyFileAsync(sourceFile, targetPath, cancellationToken).ConfigureAwait(false);
                 copiedFiles++;
             }
@@ -70,6 +68,9 @@ internal sealed class JsonColdStoreSnapshotStore
         string targetPath,
         CancellationToken cancellationToken)
     {
+        if (JsonColdStoreDirectoryWalker.IsReparsePoint(sourcePath))
+            throw new JsonColdStoreUnsafePathException("The snapshot source file cannot be a reparse point.");
+
         await using var source = new FileStream(
             sourcePath,
             FileMode.Open,
@@ -104,8 +105,8 @@ internal sealed class JsonColdStoreSnapshotStore
             if (string.Equals(directory, currentSnapshotDirectory, StringComparison.OrdinalIgnoreCase))
                 continue;
 
-            Directory.Delete(directory, recursive: true);
-            deleted++;
+            if (DeleteSnapshotDirectoryIfSafe(directory))
+                deleted++;
         }
 
         return deleted;
@@ -113,10 +114,19 @@ internal sealed class JsonColdStoreSnapshotStore
 
     private static void DeleteIncompleteSnapshot(string snapshotDirectory)
     {
+        DeleteSnapshotDirectoryIfSafe(snapshotDirectory);
+    }
+
+    private static bool DeleteSnapshotDirectoryIfSafe(string snapshotDirectory)
+    {
         try
         {
-            if (Directory.Exists(snapshotDirectory))
+            if (Directory.Exists(snapshotDirectory)
+                && !JsonColdStoreDirectoryWalker.IsReparsePoint(snapshotDirectory))
+            {
                 Directory.Delete(snapshotDirectory, recursive: true);
+                return true;
+            }
         }
         catch (IOException)
         {
@@ -124,6 +134,8 @@ internal sealed class JsonColdStoreSnapshotStore
         catch (UnauthorizedAccessException)
         {
         }
+
+        return false;
     }
 
     private static IEnumerable<string> EnumerateSnapshotSourceFiles(string directory)
@@ -142,6 +154,21 @@ internal sealed class JsonColdStoreSnapshotStore
         var name = Path.GetFileName(directory);
         return string.Equals(name, SnapshotDirectoryName, StringComparison.Ordinal)
             || string.Equals(name, LockDirectoryName, StringComparison.Ordinal);
+    }
+
+    private static void CreateSafeSnapshotTargetDirectory(
+        string snapshotDirectory,
+        IReadOnlyList<string> targetSegments)
+    {
+        if (targetSegments.Count <= 1)
+        {
+            JsonColdStoreDirectoryGuard.CreateDirectory(snapshotDirectory);
+            return;
+        }
+
+        JsonColdStoreDirectoryGuard.CreateDirectory(
+            snapshotDirectory,
+            [.. targetSegments.Take(targetSegments.Count - 1)]);
     }
 
     private static bool IsTemporaryFile(string path) =>
