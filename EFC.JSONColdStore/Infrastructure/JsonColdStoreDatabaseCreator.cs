@@ -46,7 +46,7 @@ internal sealed class JsonColdStoreDatabaseCreator : IDatabaseCreator
         var storeFilePath = JsonColdStorePathValidator.GetSafeChildPath(
             _options.DatabaseDirectory,
             JsonColdStoreCatalog.StoreFileName);
-        if (!File.Exists(storeFilePath))
+        if (!JsonColdStoreCatalog.StoreFileExists(storeFilePath))
         {
             if (Directory.EnumerateFileSystemEntries(databaseDirectory).Any())
             {
@@ -64,7 +64,7 @@ internal sealed class JsonColdStoreDatabaseCreator : IDatabaseCreator
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (!File.Exists(storeFilePath))
+            if (!JsonColdStoreCatalog.StoreFileExists(storeFilePath))
                 return false;
 
             var catalog = new JsonColdStoreCatalog(_options);
@@ -106,7 +106,7 @@ internal sealed class JsonColdStoreDatabaseCreator : IDatabaseCreator
         var modelFilePath = JsonColdStorePathValidator.GetSafeChildPath(
             _options.DatabaseDirectory,
             JsonColdStoreModelCatalog.ModelFileName);
-        var existed = File.Exists(storeFilePath) && File.Exists(modelFilePath);
+        var existed = JsonColdStoreCatalog.StoreFileExists(storeFilePath) && File.Exists(modelFilePath);
 
         await using var session = await JsonColdStoreDatabaseSession.OpenAsync(
             _options,
@@ -146,8 +146,15 @@ internal sealed class JsonColdStoreDatabaseCreator : IDatabaseCreator
         var storeFilePath = JsonColdStorePathValidator.GetSafeChildPath(
             _options.DatabaseDirectory,
             JsonColdStoreCatalog.StoreFileName);
-        if (File.Exists(storeFilePath))
-            return await CanLoadCurrentStoreAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (JsonColdStoreCatalog.StoreFileExists(storeFilePath))
+                return await CanLoadCurrentStoreAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (IsConnectionProbeFailure(ex))
+        {
+            return false;
+        }
 
         var modelDescriptor = JsonColdStoreModelDescriptor.Create(_currentDbContext.Context.Model);
         var legacyRecords = new JsonColdStoreLegacyRecordStore(_options);

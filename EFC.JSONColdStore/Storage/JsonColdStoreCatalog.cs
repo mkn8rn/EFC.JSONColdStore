@@ -147,7 +147,7 @@ internal sealed class JsonColdStoreCatalog
     private string GetStoreFilePath() =>
         JsonColdStorePathValidator.GetSafeChildPath(_options.DatabaseDirectory, StoreFileName);
 
-    private static bool StoreFileExists(string storeFile)
+    internal static bool StoreFileExists(string storeFile)
     {
         JsonColdStoreFileGuard.ThrowIfReparsePoint(
             storeFile,

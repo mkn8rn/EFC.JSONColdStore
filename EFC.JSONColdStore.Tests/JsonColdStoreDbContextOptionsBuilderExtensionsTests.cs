@@ -350,6 +350,62 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
     }
 
     [Fact]
+    public async Task CanConnectReturnsFalseForProtectedStoreMetadataWithoutKey()
+    {
+        var directory = TestDirectory("can-connect-protected-store-" + Guid.NewGuid().ToString("N"));
+        using var key = JsonColdStoreEncryptionKey.FromBytes(new byte[32]);
+        var encryptedBuilder = new DbContextOptionsBuilder<WritableDbContext>();
+        encryptedBuilder.UseJsonColdStoreDatabase(
+            directory,
+            store => store
+                .UseEncryptionKey(key)
+                .UseFsyncOnWrite(false));
+        using (var encryptedContext = new WritableDbContext(encryptedBuilder.Options))
+        {
+            encryptedContext.Database.EnsureCreated();
+        }
+
+        var plaintextBuilder = new DbContextOptionsBuilder<WritableDbContext>();
+        plaintextBuilder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+        using var plaintextContext = new WritableDbContext(plaintextBuilder.Options);
+
+        Assert.False(plaintextContext.Database.CanConnect());
+        Assert.False(await plaintextContext.Database.CanConnectAsync());
+        Assert.True(File.Exists(Path.Combine(directory, JsonColdStoreCatalog.StoreFileName)));
+    }
+
+    [Fact]
+    public async Task CanConnectReturnsFalseForReparsePointStoreMetadata()
+    {
+        var directory = TestDirectory("can-connect-linked-store-" + Guid.NewGuid().ToString("N"));
+        var outside = TestDirectory("can-connect-linked-store-target-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        Directory.CreateDirectory(outside);
+        var id = Guid.Parse("62000000-0000-0000-0000-000000000014");
+        await WriteLegacyEntityAsync(
+            directory,
+            new WritableEntity
+            {
+                Id = id,
+                Value = "legacy behind linked store metadata",
+            });
+        var storePath = Path.Combine(directory, JsonColdStoreCatalog.StoreFileName);
+        JsonColdStoreReparsePointTestHelper.CreateRequiredDirectoryLink(
+            storePath,
+            outside,
+            nameof(CanConnectReturnsFalseForReparsePointStoreMetadata));
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+        using var context = new WritableDbContext(builder.Options);
+
+        Assert.False(context.Database.CanConnect());
+        Assert.False(await context.Database.CanConnectAsync());
+        Assert.True(File.Exists(Path.Combine(directory, nameof(WritableEntity), $"{id}.json")));
+        Assert.False(Directory.Exists(Path.Combine(directory, "_locks")));
+        Assert.Empty(Directory.EnumerateFileSystemEntries(outside));
+    }
+
+    [Fact]
     public void EnsureCreatedCreatesRootAndModelMetadataOnce()
     {
         var directory = TestDirectory("ensure-created-" + Guid.NewGuid().ToString("N"));
@@ -361,6 +417,37 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
         Assert.False(context.Database.EnsureCreated());
         Assert.True(File.Exists(Path.Combine(directory, "_store.json")));
         Assert.True(File.Exists(Path.Combine(directory, "_model.json")));
+    }
+
+    [Fact]
+    public async Task EnsureCreatedRejectsReparsePointStoreMetadataBeforeLock()
+    {
+        var directory = TestDirectory("ensure-created-linked-store-" + Guid.NewGuid().ToString("N"));
+        var outside = TestDirectory("ensure-created-linked-store-target-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        Directory.CreateDirectory(outside);
+        var outsideFile = Path.Combine(outside, JsonColdStoreCatalog.StoreFileName);
+        await File.WriteAllTextAsync(outsideFile, "outside ensure-created store metadata");
+        var storePath = Path.Combine(directory, JsonColdStoreCatalog.StoreFileName);
+        JsonColdStoreReparsePointTestHelper.CreateRequiredFileLink(
+            storePath,
+            outsideFile,
+            nameof(EnsureCreatedRejectsReparsePointStoreMetadataBeforeLock));
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+        using var context = new WritableDbContext(builder.Options);
+
+        var exception = Assert.Throws<JsonColdStoreUnsafePathException>(
+            () => context.Database.EnsureCreated());
+
+        Assert.Contains("metadata", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(directory, exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(storePath, exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(outsideFile, exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("outside ensure-created store metadata", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("outside ensure-created store metadata", await File.ReadAllTextAsync(outsideFile));
+        Assert.False(Directory.Exists(Path.Combine(directory, "_locks")));
+        Assert.False(File.Exists(Path.Combine(directory, JsonColdStoreModelCatalog.ModelFileName)));
     }
 
     [Fact]
@@ -539,6 +626,37 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
 
         Assert.Contains("metadata", exception.Message);
         Assert.True(File.Exists(unrelatedFile));
+        Assert.False(Directory.Exists(Path.Combine(directory, "_locks")));
+    }
+
+    [Fact]
+    public async Task EnsureDeletedRejectsReparsePointStoreMetadataBeforeLock()
+    {
+        var directory = TestDirectory("ensure-deleted-linked-store-" + Guid.NewGuid().ToString("N"));
+        var outside = TestDirectory("ensure-deleted-linked-store-target-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        Directory.CreateDirectory(outside);
+        var outsideFile = Path.Combine(outside, JsonColdStoreCatalog.StoreFileName);
+        await File.WriteAllTextAsync(outsideFile, "outside ensure-deleted store metadata");
+        var storePath = Path.Combine(directory, JsonColdStoreCatalog.StoreFileName);
+        JsonColdStoreReparsePointTestHelper.CreateRequiredFileLink(
+            storePath,
+            outsideFile,
+            nameof(EnsureDeletedRejectsReparsePointStoreMetadataBeforeLock));
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+        using var context = new WritableDbContext(builder.Options);
+
+        var exception = Assert.Throws<JsonColdStoreUnsafePathException>(
+            () => context.Database.EnsureDeleted());
+
+        Assert.Contains("metadata", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(directory, exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(storePath, exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(outsideFile, exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("outside ensure-deleted store metadata", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.True(Directory.Exists(directory));
+        Assert.Equal("outside ensure-deleted store metadata", await File.ReadAllTextAsync(outsideFile));
         Assert.False(Directory.Exists(Path.Combine(directory, "_locks")));
     }
 
