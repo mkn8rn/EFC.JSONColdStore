@@ -505,6 +505,43 @@ public sealed class JsonColdStoreRecordStoreTests
     }
 
     [Fact]
+    public async Task RecoverPendingManifestsRejectsReparsePointTargetDirectoryWithoutRetrying()
+    {
+        var root = NewTempDirectory();
+        var outside = NewTempDirectory();
+        var options = new JsonColdStoreOptionsBuilder(root)
+            .UseCompression(JsonColdStoreCompression.None)
+            .UseFsyncOnWrite(false)
+            .UseTransactionReplay(maxRetries: 5)
+            .Build();
+        var store = new JsonColdStoreRecordStore(options);
+        var targetSegments = JsonColdStoreRecordStore.GetRecordPathSegments("Entity", "staged");
+        var encodedPayload = JsonColdStorePayloadCodec.Encode("payload"u8, options);
+        var manifest = JsonColdStoreWriteManifest.CreateStagedWrite(
+            targetSegments,
+            encodedPayload.Length);
+        await JsonColdStoreAtomicFileWriter.WriteAsync(
+            root,
+            manifest.StagedPathSegments!,
+            encodedPayload,
+            fsync: false);
+        await WriteManifestAsync(root, manifest);
+        var linkCreated = JsonColdStoreReparsePointTestHelper.TryCreateDirectoryLink(
+                Path.Combine(root, "entities"),
+                outside);
+        Assert.True(
+            linkCreated,
+            "Unable to create the linked entities directory required for the replay escape proof.");
+
+        await Assert.ThrowsAsync<JsonColdStoreUnsafePathException>(
+            () => store.RecoverPendingManifestsAsync());
+
+        Assert.True(File.Exists(ManifestPath(root, manifest.ManifestId)));
+        Assert.True(File.Exists(StagedPath(root, manifest.ManifestId)));
+        Assert.Empty(Directory.EnumerateFileSystemEntries(outside));
+    }
+
+    [Fact]
     public async Task RecoverPendingManifestsDeletesOrphanedStagedWriteWithoutManifest()
     {
         var root = NewTempDirectory();
@@ -639,6 +676,17 @@ public sealed class JsonColdStoreRecordStoreTests
 
         Assert.True(File.Exists(ManifestPath(root, manifest.ManifestId)));
         Assert.Empty(Directory.EnumerateFileSystemEntries(outside));
+    }
+
+    [Fact]
+    public void IsTransientReplayExceptionDoesNotRetryUnsafePathFailures()
+    {
+        Assert.True(JsonColdStoreRecordStore.IsTransientReplayException(
+            new IOException("retry")));
+        Assert.True(JsonColdStoreRecordStore.IsTransientReplayException(
+            new UnauthorizedAccessException("retry")));
+        Assert.False(JsonColdStoreRecordStore.IsTransientReplayException(
+            new JsonColdStoreUnsafePathException("fail closed")));
     }
 
     [Fact]

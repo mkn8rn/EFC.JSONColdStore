@@ -74,4 +74,26 @@ public sealed class JsonColdStoreRetryPolicyTests
 
         Assert.Equal(1, attempts);
     }
+
+    [Fact]
+    public async Task ExecuteAsyncDoesNotRetryUnsafePathReplayFailures()
+    {
+        var attempts = 0;
+        var options = new JsonColdStoreRetryOptions
+        {
+            MaxRetries = 3,
+            BaseDelay = TimeSpan.Zero,
+        };
+
+        await Assert.ThrowsAsync<JsonColdStoreUnsafePathException>(() => JsonColdStoreRetryPolicy.ExecuteAsync(
+            options,
+            _ =>
+            {
+                attempts++;
+                throw new JsonColdStoreUnsafePathException("fail closed");
+            },
+            JsonColdStoreRecordStore.IsTransientReplayException));
+
+        Assert.Equal(1, attempts);
+    }
 }

@@ -537,10 +537,13 @@ internal sealed class JsonColdStoreRecordStore
         var targetPath = JsonColdStorePathValidator.GetSafeChildPath(
             _options.DatabaseDirectory,
             [.. manifest.TargetPathSegments]);
-        var targetDirectory = Path.GetDirectoryName(targetPath)
-            ?? throw new InvalidOperationException("The target path has no directory.");
 
-        Directory.CreateDirectory(targetDirectory);
+        if (File.Exists(stagedPath) && JsonColdStoreDirectoryWalker.IsReparsePoint(stagedPath))
+            throw new JsonColdStoreUnsafePathException("The staged payload cannot be a reparse point.");
+        if (File.Exists(targetPath) && JsonColdStoreDirectoryWalker.IsReparsePoint(targetPath))
+            throw new JsonColdStoreUnsafePathException("The target record cannot be a reparse point.");
+
+        CreateSafeTargetDirectory(manifest.TargetPathSegments);
         File.Move(stagedPath, targetPath, overwrite: true);
     }
 
@@ -589,9 +592,22 @@ internal sealed class JsonColdStoreRecordStore
             IsTransientReplayException,
             cancellationToken);
 
-    private static bool IsTransientReplayException(Exception exception) =>
+    internal static bool IsTransientReplayException(Exception exception) =>
         exception is IOException
         || (exception is UnauthorizedAccessException and not JsonColdStoreUnsafePathException);
+
+    private void CreateSafeTargetDirectory(IReadOnlyList<string> targetPathSegments)
+    {
+        if (targetPathSegments.Count <= 1)
+        {
+            JsonColdStoreDirectoryGuard.CreateDirectory(_options.DatabaseDirectory);
+            return;
+        }
+
+        JsonColdStoreDirectoryGuard.CreateDirectory(
+            _options.DatabaseDirectory,
+            [.. targetPathSegments.Take(targetPathSegments.Count - 1)]);
+    }
 
     private void RequireStorageMutations()
     {
