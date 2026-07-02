@@ -1913,6 +1913,7 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
         Assert.Null(diagnostics.StoreId);
         Assert.Equal(1, diagnostics.RecordFileCount);
         Assert.Equal(2, diagnostics.IndexFileCount);
+        Assert.Equal(0, diagnostics.SkippedUnsafePathCount);
         Assert.DoesNotContain("protected diagnostic payload", serialized, StringComparison.Ordinal);
     }
 
@@ -2148,6 +2149,65 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
         Assert.True(File.Exists(Path.Combine(outside, JsonColdStoreCatalog.StoreFileName)));
         Assert.True(Directory.Exists(Path.Combine(outside, nameof(WritableEntity))));
         Assert.False(Directory.Exists(Path.Combine(outside, "_locks")));
+    }
+
+    [Fact]
+    public async Task GetJsonColdStoreDiagnosticsAsyncCountsReparsePointStoreMetadataAsSkippedUnsafe()
+    {
+        var directory = TestDirectory("diagnostics-linked-store-metadata-" + Guid.NewGuid().ToString("N"));
+        var outside = TestDirectory("diagnostics-linked-store-metadata-outside-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        Directory.CreateDirectory(outside);
+        var outsideFile = Path.Combine(outside, JsonColdStoreCatalog.StoreFileName);
+        await File.WriteAllTextAsync(outsideFile, """{"outsideMetadataSecret":true}""");
+        var storePath = Path.Combine(directory, JsonColdStoreCatalog.StoreFileName);
+        JsonColdStoreReparsePointTestHelper.CreateRequiredFileLink(
+            storePath,
+            outsideFile,
+            nameof(GetJsonColdStoreDiagnosticsAsyncCountsReparsePointStoreMetadataAsSkippedUnsafe));
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+
+        using var context = new WritableDbContext(builder.Options);
+        var diagnostics = await context.Database.GetJsonColdStoreDiagnosticsAsync();
+        var serialized = JsonSerializer.Serialize(diagnostics);
+
+        Assert.True(diagnostics.HasStoreMetadata);
+        Assert.False(diagnostics.StoreMetadataReadable);
+        Assert.False(diagnostics.StoreMetadataProtected);
+        Assert.Equal(1, diagnostics.SkippedUnsafePathCount);
+        Assert.Equal(0, diagnostics.Entities[0].SkippedUnsafePathCount);
+        Assert.Equal(0, diagnostics.RecordFileCount);
+        Assert.Equal(0, diagnostics.IndexFileCount);
+        Assert.DoesNotContain(directory, serialized, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(storePath, serialized, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(outside, serialized, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("outsideMetadataSecret", serialized, StringComparison.Ordinal);
+        Assert.True(File.Exists(storePath));
+        Assert.Equal("""{"outsideMetadataSecret":true}""", await File.ReadAllTextAsync(outsideFile));
+    }
+
+    [Fact]
+    public async Task GetJsonColdStoreDiagnosticsAsyncReportsCorruptMetadataWithoutSkippingUnsafePath()
+    {
+        var directory = TestDirectory("diagnostics-corrupt-store-metadata-" + Guid.NewGuid().ToString("N"));
+        await WriteTextFileAsync(
+            Path.Combine(directory, JsonColdStoreCatalog.StoreFileName),
+            """{"corruptMetadataSecret":""");
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+
+        using var context = new WritableDbContext(builder.Options);
+        var diagnostics = await context.Database.GetJsonColdStoreDiagnosticsAsync();
+        var serialized = JsonSerializer.Serialize(diagnostics);
+
+        Assert.True(diagnostics.HasStoreMetadata);
+        Assert.False(diagnostics.StoreMetadataReadable);
+        Assert.False(diagnostics.StoreMetadataProtected);
+        Assert.Equal(0, diagnostics.SkippedUnsafePathCount);
+        Assert.Equal(0, diagnostics.Entities[0].SkippedUnsafePathCount);
+        Assert.DoesNotContain(directory, serialized, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("corruptMetadataSecret", serialized, StringComparison.Ordinal);
     }
 
     [Fact]

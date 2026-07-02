@@ -42,7 +42,9 @@ internal sealed class JsonColdStoreDiagnosticsStore
                 skippedUnsafePaths);
         }
 
-        var metadataDiagnostics = await TryReadMetadataAsync(cancellationToken).ConfigureAwait(false);
+        var metadataDiagnostics = await TryReadMetadataAsync(
+            skippedUnsafePaths,
+            cancellationToken).ConfigureAwait(false);
         var metadata = metadataDiagnostics.Metadata;
         var entityDiagnostics = _modelDescriptor.Entities
             .Select(descriptor => CreateEntityDiagnostics(descriptor, skippedUnsafePaths))
@@ -133,11 +135,19 @@ internal sealed class JsonColdStoreDiagnosticsStore
             .ToArray();
 
     private async Task<JsonColdStoreMetadataDiagnostics> TryReadMetadataAsync(
+        ISet<string> skippedUnsafePaths,
         CancellationToken cancellationToken)
     {
         var storePath = JsonColdStorePathValidator.GetSafeChildPath(
             _options.DatabaseDirectory,
             JsonColdStoreCatalog.StoreFileName);
+        var skippedBeforeMetadataProbe = skippedUnsafePaths.Count;
+        if (!FileExistsAndIsSafe(storePath, skippedUnsafePaths))
+        {
+            var unsafeStorePathExists = skippedUnsafePaths.Count > skippedBeforeMetadataProbe;
+            return new JsonColdStoreMetadataDiagnostics(unsafeStorePathExists, false, null);
+        }
+
         if (!File.Exists(storePath))
             return new JsonColdStoreMetadataDiagnostics(false, false, null);
 
@@ -154,11 +164,20 @@ internal sealed class JsonColdStoreDiagnosticsStore
             var metadata = await catalog.LoadAndValidateAsync(cancellationToken).ConfigureAwait(false);
             return new JsonColdStoreMetadataDiagnostics(true, protectedMetadata, metadata);
         }
+        catch (Exception ex) when (IsUnsafeMetadataDiagnosticReadFailure(ex))
+        {
+            RecordSkippedUnsafePath(skippedUnsafePaths, storePath);
+            return new JsonColdStoreMetadataDiagnostics(true, protectedMetadata, null);
+        }
         catch (Exception ex) when (IsMetadataDiagnosticReadFailure(ex))
         {
             return new JsonColdStoreMetadataDiagnostics(true, protectedMetadata, null);
         }
     }
+
+    private static bool IsUnsafeMetadataDiagnosticReadFailure(Exception exception) =>
+        exception is IOException
+            or UnauthorizedAccessException;
 
     private static bool IsMetadataDiagnosticReadFailure(Exception exception) =>
         exception is IOException
