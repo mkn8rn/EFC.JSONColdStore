@@ -135,7 +135,7 @@ internal sealed class JsonColdStoreDatabaseCreator : IDatabaseCreator
     {
         cancellationToken.ThrowIfCancellationRequested();
         var databaseDirectory = JsonColdStorePathValidator.GetSafeChildPath(_options.DatabaseDirectory);
-        if (!Directory.Exists(databaseDirectory))
+        if (!JsonColdStoreDirectoryGuard.ExistingDatabaseRootIsSafe(databaseDirectory))
             return false;
 
         var storeFilePath = JsonColdStorePathValidator.GetSafeChildPath(

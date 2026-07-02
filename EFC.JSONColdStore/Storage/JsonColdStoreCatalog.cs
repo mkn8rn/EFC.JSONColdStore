@@ -25,7 +25,7 @@ internal sealed class JsonColdStoreCatalog
     internal async Task<JsonColdStoreStoreMetadata> EnsureInitializedAsync(
         CancellationToken cancellationToken = default)
     {
-        Directory.CreateDirectory(_options.DatabaseDirectory);
+        JsonColdStoreDirectoryGuard.CreateDatabaseRoot(_options.DatabaseDirectory);
 
         var storeFile = GetStoreFilePath();
         if (File.Exists(storeFile))
@@ -39,6 +39,8 @@ internal sealed class JsonColdStoreCatalog
     internal async Task<JsonColdStoreStoreMetadata> LoadIfExistsOrCreateTransientAsync(
         CancellationToken cancellationToken = default)
     {
+        JsonColdStoreDirectoryGuard.ThrowIfExistingDatabaseRootIsReparsePoint(_options.DatabaseDirectory);
+
         var storeFile = GetStoreFilePath();
         return File.Exists(storeFile)
             ? await LoadAndValidateAsync(cancellationToken)
@@ -48,6 +50,8 @@ internal sealed class JsonColdStoreCatalog
     internal async Task<JsonColdStoreStoreMetadata> LoadAndValidateAsync(
         CancellationToken cancellationToken = default)
     {
+        JsonColdStoreDirectoryGuard.ThrowIfExistingDatabaseRootIsReparsePoint(_options.DatabaseDirectory);
+
         var bytes = await JsonColdStoreFileReader.ReadAllBytesAsync(
             _options,
             GetStoreFilePath(),

@@ -492,6 +492,60 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
     }
 
     [Fact]
+    public void EnsureCreatedRejectsReparsePointDatabaseRoot()
+    {
+        var parent = TestDirectory("ensure-created-reparse-parent-" + Guid.NewGuid().ToString("N"));
+        var outside = TestDirectory("ensure-created-reparse-target-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(parent);
+        Directory.CreateDirectory(outside);
+        var link = Path.Combine(parent, "linked-store");
+        JsonColdStoreReparsePointTestHelper.CreateRequiredDirectoryLink(
+            link,
+            outside,
+            nameof(EnsureCreatedRejectsReparsePointDatabaseRoot));
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(link, store => store.UseFsyncOnWrite(false));
+        using var context = new WritableDbContext(builder.Options);
+
+        var exception = Assert.Throws<JsonColdStoreUnsafePathException>(
+            () => context.Database.EnsureCreated());
+
+        Assert.Contains("database directory", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(link, exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(Directory.EnumerateFileSystemEntries(outside));
+    }
+
+    [Fact]
+    public async Task CanConnectReturnsFalseForReparsePointDatabaseRoot()
+    {
+        var parent = TestDirectory("can-connect-reparse-parent-" + Guid.NewGuid().ToString("N"));
+        var outside = TestDirectory("can-connect-reparse-target-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(parent);
+        Directory.CreateDirectory(outside);
+        var id = Guid.Parse("62000000-0000-0000-0000-000000000013");
+        await WriteLegacyEntityAsync(
+            outside,
+            new WritableEntity
+            {
+                Id = id,
+                Value = "outside-root-legacy",
+            });
+        var link = Path.Combine(parent, "linked-store");
+        JsonColdStoreReparsePointTestHelper.CreateRequiredDirectoryLink(
+            link,
+            outside,
+            nameof(CanConnectReturnsFalseForReparsePointDatabaseRoot));
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(link, store => store.UseFsyncOnWrite(false));
+        using var context = new WritableDbContext(builder.Options);
+
+        Assert.False(context.Database.CanConnect());
+        Assert.False(await context.Database.CanConnectAsync());
+        Assert.True(File.Exists(Path.Combine(outside, nameof(WritableEntity), $"{id}.json")));
+        Assert.False(Directory.Exists(Path.Combine(outside, "_locks")));
+    }
+
+    [Fact]
     public void EnsureDeletedRejectsInvalidStoreMetadata()
     {
         var directory = TestDirectory("ensure-deleted-invalid-metadata-" + Guid.NewGuid().ToString("N"));
