@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -50,6 +51,61 @@ public sealed class JsonColdStoreRecordStoreTests
         await store.WriteRecordAsync("Entity", "event-disabled", "payload"u8.ToArray());
 
         Assert.False(Directory.Exists(Path.Combine(root, "_events")));
+    }
+
+    [Fact]
+    public async Task ReadRecordAsyncRejectsReparsePointRecordFile()
+    {
+        var root = NewTempDirectory();
+        var outside = NewTempDirectory();
+        var recordPath = JsonColdStorePathValidator.GetSafeChildPath(
+            root,
+            [.. JsonColdStoreRecordStore.GetRecordPathSegments("Entity", "linked-read")]);
+        Directory.CreateDirectory(Path.GetDirectoryName(recordPath)!);
+        var outsideFile = Path.Combine(outside, "outside.jcs");
+        await File.WriteAllTextAsync(outsideFile, "outside-record");
+        JsonColdStoreReparsePointTestHelper.CreateRequiredFileLink(
+            recordPath,
+            outsideFile,
+            nameof(ReadRecordAsyncRejectsReparsePointRecordFile));
+        var options = new JsonColdStoreOptionsBuilder(root)
+            .UseCompression(JsonColdStoreCompression.None)
+            .UseFsyncOnWrite(false)
+            .Build();
+        var store = new JsonColdStoreRecordStore(options);
+
+        await Assert.ThrowsAsync<JsonColdStoreUnsafePathException>(
+            () => store.ReadRecordAsync("Entity", "linked-read"));
+
+        Assert.Equal("outside-record", await File.ReadAllTextAsync(outsideFile));
+    }
+
+    [Fact]
+    public async Task DeleteRecordAsyncRejectsReparsePointRecordFile()
+    {
+        var root = NewTempDirectory();
+        var outside = NewTempDirectory();
+        var options = new JsonColdStoreOptionsBuilder(root)
+            .UseCompression(JsonColdStoreCompression.None)
+            .UseFsyncOnWrite(false)
+            .Build();
+        var store = new JsonColdStoreRecordStore(options);
+        await store.WriteRecordAsync("Entity", "linked-delete", "payload"u8.ToArray());
+        var recordPath = JsonColdStorePathValidator.GetSafeChildPath(
+            root,
+            [.. JsonColdStoreRecordStore.GetRecordPathSegments("Entity", "linked-delete")]);
+        File.Delete(recordPath);
+        var outsideFile = Path.Combine(outside, "outside.jcs");
+        await File.WriteAllTextAsync(outsideFile, "outside-delete");
+        JsonColdStoreReparsePointTestHelper.CreateRequiredFileLink(
+            recordPath,
+            outsideFile,
+            nameof(DeleteRecordAsyncRejectsReparsePointRecordFile));
+
+        await Assert.ThrowsAsync<JsonColdStoreUnsafePathException>(
+            () => store.DeleteRecordAsync("Entity", "linked-delete"));
+
+        Assert.Equal("outside-delete", await File.ReadAllTextAsync(outsideFile));
     }
 
     [Fact]
@@ -141,6 +197,33 @@ public sealed class JsonColdStoreRecordStoreTests
 
         Assert.True(store.RecordExists("Entity", "event-reparse"));
         Assert.Empty(Directory.EnumerateFileSystemEntries(outside));
+    }
+
+    [Fact]
+    public async Task WriteRecordAsyncSkipsReparsePointEventLogFile()
+    {
+        var root = NewTempDirectory();
+        var outside = NewTempDirectory();
+        var eventsDirectory = Path.Combine(root, "_events");
+        Directory.CreateDirectory(eventsDirectory);
+        var outsideFile = Path.Combine(outside, "outside.jsonl");
+        await File.WriteAllTextAsync(outsideFile, "outside-event");
+        JsonColdStoreReparsePointTestHelper.CreateRequiredFileLink(
+            Path.Combine(
+                eventsDirectory,
+                DateTimeOffset.UtcNow.ToString("yyyyMMdd", CultureInfo.InvariantCulture) + ".jsonl"),
+            outsideFile,
+            nameof(WriteRecordAsyncSkipsReparsePointEventLogFile));
+        var options = new JsonColdStoreOptionsBuilder(root)
+            .UseEventLog(enabled: true, TimeSpan.FromDays(7))
+            .UseFsyncOnWrite(false)
+            .Build();
+        var store = new JsonColdStoreRecordStore(options);
+
+        await store.WriteRecordAsync("Entity", "event-file-reparse", "payload"u8.ToArray());
+
+        Assert.True(store.RecordExists("Entity", "event-file-reparse"));
+        Assert.Equal("outside-event", await File.ReadAllTextAsync(outsideFile));
     }
 
     [Fact]
@@ -668,6 +751,37 @@ public sealed class JsonColdStoreRecordStoreTests
 
         Assert.True(File.Exists(ManifestPath(root, manifest.ManifestId)));
         Assert.Empty(Directory.EnumerateFileSystemEntries(outside));
+    }
+
+    [Fact]
+    public async Task RecoverPendingManifestsRejectsReparsePointFailedManifestFile()
+    {
+        var root = NewTempDirectory();
+        var outside = NewTempDirectory();
+        var options = new JsonColdStoreOptionsBuilder(root)
+            .UseCompression(JsonColdStoreCompression.None)
+            .UseFsyncOnWrite(false)
+            .UseTransactionReplay(maxRetries: 5)
+            .Build();
+        var store = new JsonColdStoreRecordStore(options);
+        var manifest = JsonColdStoreWriteManifest.CreateWrite(
+            JsonColdStoreRecordStore.GetRecordPathSegments("Missing", "linked-failed"),
+            payloadLength: 7);
+        await WriteManifestAsync(root, manifest);
+        var failedDirectory = Path.Combine(root, "_transactions", "failed");
+        Directory.CreateDirectory(failedDirectory);
+        var outsideFile = Path.Combine(outside, manifest.ManifestId.ToString("N") + ".json");
+        await File.WriteAllTextAsync(outsideFile, "outside-failed");
+        JsonColdStoreReparsePointTestHelper.CreateRequiredFileLink(
+            Path.Combine(failedDirectory, manifest.ManifestId.ToString("N") + ".json"),
+            outsideFile,
+            nameof(RecoverPendingManifestsRejectsReparsePointFailedManifestFile));
+
+        await Assert.ThrowsAsync<JsonColdStoreUnsafePathException>(
+            () => store.RecoverPendingManifestsAsync());
+
+        Assert.True(File.Exists(ManifestPath(root, manifest.ManifestId)));
+        Assert.Equal("outside-failed", await File.ReadAllTextAsync(outsideFile));
     }
 
     [Fact]

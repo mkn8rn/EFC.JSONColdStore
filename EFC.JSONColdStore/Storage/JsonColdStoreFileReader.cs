@@ -10,6 +10,10 @@ internal static class JsonColdStoreFileReader
         ArgumentNullException.ThrowIfNull(options);
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
 
+        JsonColdStoreFileGuard.ThrowIfReparsePoint(
+            path,
+            "The JSONColdStore file read target cannot be a reparse point.");
+
         return JsonColdStoreRetryPolicy.ExecuteAsync(
             options.ReadRetry,
             token => File.ReadAllBytesAsync(path, token),

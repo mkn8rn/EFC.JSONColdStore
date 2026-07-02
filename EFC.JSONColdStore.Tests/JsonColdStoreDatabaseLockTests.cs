@@ -65,6 +65,29 @@ public sealed class JsonColdStoreDatabaseLockTests
     }
 
     [Fact]
+    public async Task AcquireAsyncRejectsReparsePointLockFile()
+    {
+        var root = NewTempDirectory();
+        var outside = NewTempDirectory();
+        Directory.CreateDirectory(Path.Combine(root, JsonColdStoreDatabaseLock.LockDirectoryName));
+        var outsideFile = Path.Combine(outside, JsonColdStoreDatabaseLock.WriterLockFileName);
+        await File.WriteAllTextAsync(outsideFile, "outside-lock");
+        JsonColdStoreReparsePointTestHelper.CreateRequiredFileLink(
+            LockPath(root),
+            outsideFile,
+            nameof(AcquireAsyncRejectsReparsePointLockFile));
+
+        var options = new JsonColdStoreOptionsBuilder(root)
+            .UseFsyncOnWrite(false)
+            .Build();
+
+        await Assert.ThrowsAsync<JsonColdStoreUnsafePathException>(
+            () => JsonColdStoreDatabaseLock.AcquireAsync(options));
+
+        Assert.Equal("outside-lock", await File.ReadAllTextAsync(outsideFile));
+    }
+
+    [Fact]
     public async Task DisposeReleasesLockFile()
     {
         var root = NewTempDirectory();

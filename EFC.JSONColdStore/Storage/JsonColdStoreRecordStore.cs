@@ -99,8 +99,7 @@ internal sealed class JsonColdStoreRecordStore
             _options.DatabaseDirectory,
             [.. recordPath]);
 
-        if (File.Exists(targetPath))
-            File.Delete(targetPath);
+        DeleteFileIfExists(targetPath);
 
         DeleteIfExists(manifestPath);
         await _eventLog.AppendAsync(
@@ -449,10 +448,8 @@ internal sealed class JsonColdStoreRecordStore
                     await ExecuteReplayAsync(
                         _ =>
                         {
-                            if (File.Exists(targetPath))
-                                File.Delete(targetPath);
-
-                            File.Delete(manifestPath);
+                            DeleteFileIfExists(targetPath);
+                            DeleteFileIfExists(manifestPath);
                             return Task.CompletedTask;
                         },
                         cancellationToken);
@@ -511,6 +508,9 @@ internal sealed class JsonColdStoreRecordStore
                 continue;
             }
 
+            if (JsonColdStoreDirectoryWalker.IsReparsePoint(stagedPath))
+                continue;
+
             File.Delete(stagedPath);
             deleted++;
         }
@@ -538,10 +538,12 @@ internal sealed class JsonColdStoreRecordStore
             _options.DatabaseDirectory,
             [.. manifest.TargetPathSegments]);
 
-        if (File.Exists(stagedPath) && JsonColdStoreDirectoryWalker.IsReparsePoint(stagedPath))
-            throw new JsonColdStoreUnsafePathException("The staged payload cannot be a reparse point.");
-        if (File.Exists(targetPath) && JsonColdStoreDirectoryWalker.IsReparsePoint(targetPath))
-            throw new JsonColdStoreUnsafePathException("The target record cannot be a reparse point.");
+        JsonColdStoreFileGuard.ThrowIfReparsePoint(
+            stagedPath,
+            "The staged payload cannot be a reparse point.");
+        JsonColdStoreFileGuard.ThrowIfReparsePoint(
+            targetPath,
+            "The target record cannot be a reparse point.");
 
         CreateSafeTargetDirectory(manifest.TargetPathSegments);
         File.Move(stagedPath, targetPath, overwrite: true);
@@ -646,8 +648,7 @@ internal sealed class JsonColdStoreRecordStore
             _options.DatabaseDirectory,
             [.. pathSegments]);
 
-        if (File.Exists(path))
-            File.Delete(path);
+        DeleteFileIfExists(path);
     }
 
     private Task MoveManifestToFailedAsync(string manifestPath, CancellationToken cancellationToken)
@@ -669,6 +670,9 @@ internal sealed class JsonColdStoreRecordStore
             "failed");
 
         var failedPath = Path.Combine(failedDirectory, Path.GetFileName(manifestPath));
+        JsonColdStoreFileGuard.ThrowIfReparsePoint(
+            failedPath,
+            "The failed manifest target cannot be a reparse point.");
         File.Move(manifestPath, failedPath, overwrite: true);
     }
 
@@ -693,6 +697,9 @@ internal sealed class JsonColdStoreRecordStore
             + "-"
             + Path.GetFileName(recordPath);
         var quarantinePath = Path.Combine(quarantineDirectory, quarantineFileName);
+        JsonColdStoreFileGuard.ThrowIfReparsePoint(
+            quarantinePath,
+            "The quarantine target cannot be a reparse point.");
         File.Move(recordPath, quarantinePath, overwrite: false);
         File.SetLastWriteTimeUtc(quarantinePath, quarantinedAt.UtcDateTime);
         PruneExpiredQuarantineFiles(quarantineDirectory);
@@ -708,6 +715,9 @@ internal sealed class JsonColdStoreRecordStore
         {
             try
             {
+                if (JsonColdStoreDirectoryWalker.IsReparsePoint(file))
+                    continue;
+
                 if (File.GetLastWriteTimeUtc(file) < cutoff)
                     File.Delete(file);
             }
@@ -718,6 +728,16 @@ internal sealed class JsonColdStoreRecordStore
             {
             }
         }
+    }
+
+    private static void DeleteFileIfExists(string path)
+    {
+        JsonColdStoreFileGuard.ThrowIfReparsePoint(
+            path,
+            "The JSONColdStore delete target cannot be a reparse point.");
+
+        if (File.Exists(path))
+            File.Delete(path);
     }
 }
 

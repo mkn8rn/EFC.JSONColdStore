@@ -82,6 +82,9 @@ internal sealed class JsonColdStoreEventLog
         var eventFile = JsonColdStorePathValidator.GetSafeChildPath(
             eventsDirectory,
             DateTimeOffset.UtcNow.ToString("yyyyMMdd", CultureInfo.InvariantCulture) + ".jsonl");
+        JsonColdStoreFileGuard.ThrowIfReparsePoint(
+            eventFile,
+            "The JSONColdStore event log file cannot be a reparse point.");
         await File.AppendAllTextAsync(
             eventFile,
             line + Environment.NewLine,
@@ -127,6 +130,9 @@ internal sealed class JsonColdStoreEventLog
         {
             try
             {
+                if (JsonColdStoreDirectoryWalker.IsReparsePoint(file))
+                    continue;
+
                 if (File.GetLastWriteTimeUtc(file) < cutoff)
                     File.Delete(file);
             }

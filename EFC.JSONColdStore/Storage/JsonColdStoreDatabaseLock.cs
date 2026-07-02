@@ -38,6 +38,9 @@ internal sealed class JsonColdStoreDatabaseLock : IDisposable
             options.DatabaseDirectory,
             LockDirectoryName,
             WriterLockFileName);
+        JsonColdStoreFileGuard.ThrowIfReparsePoint(
+            lockPath,
+            "The JSONColdStore writer lock file cannot be a reparse point.");
 
         FileStream stream;
         try
@@ -102,6 +105,8 @@ internal sealed class JsonColdStoreDatabaseLock : IDisposable
         try
         {
             if (!File.Exists(lockPath))
+                return null;
+            if (JsonColdStoreDirectoryWalker.IsReparsePoint(lockPath))
                 return null;
 
             using var stream = new FileStream(

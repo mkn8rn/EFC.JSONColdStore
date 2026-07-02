@@ -52,8 +52,9 @@ internal static class JsonColdStoreAtomicFileWriter
         CancellationToken cancellationToken)
     {
         CreateSafeTargetDirectory(databaseDirectory, pathSegments);
-        if (File.Exists(targetPath) && JsonColdStoreDirectoryWalker.IsReparsePoint(targetPath))
-            throw UnsafePath("The target file cannot be a reparse point.");
+        JsonColdStoreFileGuard.ThrowIfReparsePoint(
+            targetPath,
+            "The target file cannot be a reparse point.");
 
         var tempPath = targetPath + ".tmp-" + Guid.NewGuid().ToString("N");
         try
@@ -86,6 +87,9 @@ internal static class JsonColdStoreAtomicFileWriter
         CancellationToken cancellationToken = default)
     {
         var targetPath = ResolvePath(databaseDirectory, pathSegments);
+        JsonColdStoreFileGuard.ThrowIfReparsePoint(
+            targetPath,
+            "The JSONColdStore file read target cannot be a reparse point.");
         return await File.ReadAllBytesAsync(targetPath, cancellationToken);
     }
 
@@ -135,9 +139,6 @@ internal static class JsonColdStoreAtomicFileWriter
     internal static bool IsTransientWriteException(Exception exception) =>
         exception is IOException
         || (exception is UnauthorizedAccessException and not JsonColdStoreUnsafePathException);
-
-    private static JsonColdStoreUnsafePathException UnsafePath(string message) =>
-        new(message);
 
     private static void TryDeleteTempFile(string tempPath)
     {
