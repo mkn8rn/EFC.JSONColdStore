@@ -124,9 +124,13 @@ internal sealed class JsonColdStoreSnapshotStore
             if (Directory.Exists(snapshotDirectory)
                 && !JsonColdStoreDirectoryWalker.IsReparsePoint(snapshotDirectory))
             {
+                JsonColdStoreDirectoryGuard.ThrowIfContainsReparsePoint(snapshotDirectory);
                 Directory.Delete(snapshotDirectory, recursive: true);
                 return true;
             }
+        }
+        catch (JsonColdStoreUnsafePathException)
+        {
         }
         catch (IOException)
         {
