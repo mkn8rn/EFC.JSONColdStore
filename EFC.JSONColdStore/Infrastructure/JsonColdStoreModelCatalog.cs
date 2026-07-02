@@ -85,7 +85,7 @@ internal sealed class JsonColdStoreModelCatalog
             ?? throw new InvalidDataException("The JSONColdStore model catalog file is empty.");
     }
 
-    private static bool ModelFileExists(string modelPath)
+    internal static bool ModelFileExists(string modelPath)
     {
         JsonColdStoreFileGuard.ThrowIfReparsePoint(
             modelPath,

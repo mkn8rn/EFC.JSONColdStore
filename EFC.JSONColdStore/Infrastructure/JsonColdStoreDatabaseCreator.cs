@@ -106,7 +106,8 @@ internal sealed class JsonColdStoreDatabaseCreator : IDatabaseCreator
         var modelFilePath = JsonColdStorePathValidator.GetSafeChildPath(
             _options.DatabaseDirectory,
             JsonColdStoreModelCatalog.ModelFileName);
-        var existed = JsonColdStoreCatalog.StoreFileExists(storeFilePath) && File.Exists(modelFilePath);
+        var existed = JsonColdStoreCatalog.StoreFileExists(storeFilePath)
+            && JsonColdStoreModelCatalog.ModelFileExists(modelFilePath);
 
         await using var session = await JsonColdStoreDatabaseSession.OpenAsync(
             _options,
@@ -181,7 +182,7 @@ internal sealed class JsonColdStoreDatabaseCreator : IDatabaseCreator
             var modelFilePath = JsonColdStorePathValidator.GetSafeChildPath(
                 _options.DatabaseDirectory,
                 JsonColdStoreModelCatalog.ModelFileName);
-            if (!File.Exists(modelFilePath))
+            if (!JsonColdStoreModelCatalog.ModelFileExists(modelFilePath))
                 return true;
 
             var modelCatalog = new JsonColdStoreModelCatalog(
