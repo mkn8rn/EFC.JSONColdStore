@@ -53,6 +53,18 @@ public sealed record JsonColdStoreDiagnosticsResult
     /// <summary>Number of compatible legacy record files visible under mapped entity directories.</summary>
     public int LegacyRecordFileCount { get; init; }
 
+    /// <summary>Number of compatible legacy index shard files visible under mapped entity directories.</summary>
+    public int LegacyIndexShardFileCount { get; init; }
+
+    /// <summary>Number of compatible legacy checksum sidecar files visible under mapped entity directories.</summary>
+    public int LegacyChecksumSidecarFileCount { get; init; }
+
+    /// <summary>Number of compatible legacy shared-row documents visible under mapped shared entity directories.</summary>
+    public int LegacySharedRowsFileCount { get; init; }
+
+    /// <summary>Number of current protected documents still stored as plaintext.</summary>
+    public int PlaintextProtectedDocumentCount { get; init; }
+
     /// <summary>Number of pending transaction manifests.</summary>
     public int PendingManifestCount { get; init; }
 
@@ -103,6 +115,15 @@ public sealed record JsonColdStoreEntityDiagnostics
 
     /// <summary>Number of compatible legacy record files for this entity.</summary>
     public int LegacyRecordFileCount { get; init; }
+
+    /// <summary>Number of compatible legacy index shard files for this entity.</summary>
+    public int LegacyIndexShardFileCount { get; init; }
+
+    /// <summary>Number of compatible legacy checksum sidecar files for this entity.</summary>
+    public int LegacyChecksumSidecarFileCount { get; init; }
+
+    /// <summary>Number of compatible legacy shared-row documents for this entity.</summary>
+    public int LegacySharedRowsFileCount { get; init; }
 
     /// <summary>Number of unsafe entity path entries skipped while reading diagnostics.</summary>
     public int SkippedUnsafePathCount { get; init; }

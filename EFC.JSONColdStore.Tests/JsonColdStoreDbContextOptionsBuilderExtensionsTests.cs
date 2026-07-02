@@ -2,15 +2,36 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 using EFC.JSONColdStore;
 using EFC.JSONColdStore.Infrastructure;
 using EFC.JSONColdStore.Storage;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata;
 
 namespace EFC.JSONColdStore.Tests;
 
 public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
 {
+    private static readonly JsonSerializerOptions StoreJsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        WriteIndented = true,
+        Converters = { new JsonStringEnumConverter() },
+    };
+
+    private static readonly JsonSerializerOptions ModelCatalogJsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        WriteIndented = true,
+    };
+
+    private static readonly JsonSerializerOptions ModelHashJsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        WriteIndented = false,
+    };
+
     [Fact]
     public void UseJsonColdStoreDatabaseStoresValidatedProviderOptions()
     {
@@ -1550,12 +1571,19 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
         Assert.True(diagnostics.HasStoreMetadata);
         Assert.Equal(1, diagnostics.RecordFileCount);
         Assert.Equal(2, diagnostics.IndexFileCount);
+        Assert.Equal(0, diagnostics.LegacyIndexShardFileCount);
+        Assert.Equal(0, diagnostics.LegacyChecksumSidecarFileCount);
+        Assert.Equal(0, diagnostics.LegacySharedRowsFileCount);
+        Assert.Equal(0, diagnostics.PlaintextProtectedDocumentCount);
         Assert.Equal(1, diagnostics.EventLogFileCount);
         Assert.Equal(1, diagnostics.SnapshotCount);
         Assert.Equal(1, diagnostics.MappedEntityCount);
         Assert.Equal(2, diagnostics.Entities[0].DeclaredIndexCount);
         Assert.Equal(1, diagnostics.Entities[0].RecordFileCount);
         Assert.Equal(2, diagnostics.Entities[0].IndexFileCount);
+        Assert.Equal(0, diagnostics.Entities[0].LegacyIndexShardFileCount);
+        Assert.Equal(0, diagnostics.Entities[0].LegacyChecksumSidecarFileCount);
+        Assert.Equal(0, diagnostics.Entities[0].LegacySharedRowsFileCount);
         Assert.True(diagnostics.EncryptionEnabled);
         Assert.True(diagnostics.IntegrityChecksumsEnabled);
         Assert.True(diagnostics.KeyedIntegrityEnabled);
@@ -1708,10 +1736,128 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
         Assert.Equal(1, diagnostics.FailedManifestCount);
         Assert.Equal(1, diagnostics.StagedWriteCount);
         Assert.Equal(1, diagnostics.QuarantineFileCount);
+        Assert.Equal(0, diagnostics.LegacyIndexShardFileCount);
+        Assert.Equal(0, diagnostics.LegacyChecksumSidecarFileCount);
+        Assert.Equal(0, diagnostics.LegacySharedRowsFileCount);
+        Assert.Equal(0, diagnostics.PlaintextProtectedDocumentCount);
         Assert.Equal(0, diagnostics.SkippedUnsafePathCount);
         Assert.Equal(0, diagnostics.Entities[0].SkippedUnsafePathCount);
         Assert.False(File.Exists(Path.Combine(directory, "_store.json")));
         Assert.False(File.Exists(Path.Combine(directory, "_model.json")));
+    }
+
+    [Fact]
+    public async Task GetJsonColdStoreDiagnosticsAsyncCountsLegacyMigrationReadinessArtifacts()
+    {
+        var directory = TestDirectory("diagnostics-legacy-readiness-" + Guid.NewGuid().ToString("N"));
+        var postId = Guid.Parse("53000000-0000-0000-0000-000000000005");
+        var tagId = Guid.Parse("53000000-0000-0000-0000-000000000006");
+        await WriteLegacyEntityAsync(
+            directory,
+            new ManyToManyPost { Id = postId },
+            postId);
+        await WriteTextFileAsync(
+            Path.Combine(directory, nameof(ManyToManyPost), "_index_Id.json"),
+            """{"legacy-index-secret":["53000000-0000-0000-0000-000000000005"]}""");
+        await WriteTextFileAsync(
+            Path.Combine(directory, nameof(ManyToManyPost), "_index_TagId", $"{tagId:D}.json"),
+            """["53000000-0000-0000-0000-000000000005"]""");
+        await WriteTextFileAsync(
+            Path.Combine(directory, nameof(ManyToManyPost), "_checksums.json"),
+            "legacy-checksum-secret");
+        await WriteTextFileAsync(
+            Path.Combine(directory, nameof(ManyToManyPost), "_checksums.sig"),
+            "legacy-signature-secret");
+        await WriteLegacySharedRowsAsync(
+            directory,
+            "ManyToManyPostTag",
+            [
+                new Dictionary<string, Guid>
+                {
+                    ["PostId"] = postId,
+                    ["TagId"] = tagId,
+                },
+            ]);
+        var builder = new DbContextOptionsBuilder<ManyToManyDbContext>();
+        builder.UseJsonColdStoreDatabase(directory, store => store.UseFsyncOnWrite(false));
+
+        using var context = new ManyToManyDbContext(builder.Options);
+        var diagnostics = await context.Database.GetJsonColdStoreDiagnosticsAsync();
+        var serialized = JsonSerializer.Serialize(diagnostics);
+
+        Assert.Equal(1, diagnostics.LegacyRecordFileCount);
+        Assert.Equal(2, diagnostics.LegacyIndexShardFileCount);
+        Assert.Equal(2, diagnostics.LegacyChecksumSidecarFileCount);
+        Assert.Equal(1, diagnostics.LegacySharedRowsFileCount);
+        Assert.Equal(0, diagnostics.PlaintextProtectedDocumentCount);
+        Assert.Equal(0, diagnostics.SkippedUnsafePathCount);
+        var postDiagnostics = Assert.Single(
+            diagnostics.Entities,
+            entity => entity.ClrTypeName == typeof(ManyToManyPost).FullName);
+        Assert.Equal(1, postDiagnostics.LegacyRecordFileCount);
+        Assert.Equal(2, postDiagnostics.LegacyIndexShardFileCount);
+        Assert.Equal(2, postDiagnostics.LegacyChecksumSidecarFileCount);
+        Assert.Equal(0, postDiagnostics.LegacySharedRowsFileCount);
+        var sharedDiagnostics = Assert.Single(
+            diagnostics.Entities,
+            entity => entity.EntityName == "ManyToManyPostTag");
+        Assert.Equal(0, sharedDiagnostics.LegacyRecordFileCount);
+        Assert.Equal(0, sharedDiagnostics.LegacyIndexShardFileCount);
+        Assert.Equal(0, sharedDiagnostics.LegacyChecksumSidecarFileCount);
+        Assert.Equal(1, sharedDiagnostics.LegacySharedRowsFileCount);
+        Assert.DoesNotContain(directory, serialized, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("legacy-index-secret", serialized, StringComparison.Ordinal);
+        Assert.DoesNotContain("legacy-checksum-secret", serialized, StringComparison.Ordinal);
+        Assert.DoesNotContain("legacy-signature-secret", serialized, StringComparison.Ordinal);
+        Assert.False(File.Exists(Path.Combine(directory, "_store.json")));
+        Assert.False(File.Exists(Path.Combine(directory, "_model.json")));
+    }
+
+    [Fact]
+    public async Task GetJsonColdStoreDiagnosticsAsyncCountsPlaintextProtectedDocumentsWithoutRemovingCompatibility()
+    {
+        var directory = TestDirectory("diagnostics-plaintext-protected-" + Guid.NewGuid().ToString("N"));
+        using var key = JsonColdStoreEncryptionKey.FromBytes(new byte[32]);
+        var builder = new DbContextOptionsBuilder<WritableDbContext>();
+        builder.UseJsonColdStoreDatabase(
+            directory,
+            store => store
+                .UseFsyncOnWrite(false)
+                .UseEncryptionKey(key));
+        var id = Guid.Parse("53000000-0000-0000-0000-000000000007");
+        using var context = new WritableDbContext(builder.Options);
+        context.Entities.Add(new WritableEntity
+        {
+            Id = id,
+            Value = "plaintext-index-secret",
+            Score = 57,
+        });
+        context.SaveChanges();
+        var storeOptions = builder.Options.FindExtension<JsonColdStoreOptionsExtension>()!.Options;
+        var metadata = JsonColdStoreStoreMetadata.CreateNew(
+            storeOptions,
+            JsonColdStoreProviderInfo.Version);
+        await WriteStoreMetadataAsync(directory, metadata);
+        await WriteModelCatalogAsync(directory, context.Model);
+        await WriteTextFileAsync(
+            IndexPath(directory, nameof(WritableEntity.Value)),
+            $"{{\"buckets\":{{\"plaintext-index-secret\":[\"{id}\"]}}}}");
+
+        var diagnostics = await context.Database.GetJsonColdStoreDiagnosticsAsync();
+        var matches = await context.Database.ReadJsonColdStoreIndexAsync<WritableEntity>(
+            nameof(WritableEntity.Value),
+            "plaintext-index-secret");
+        var serialized = JsonSerializer.Serialize(diagnostics);
+
+        Assert.True(diagnostics.StoreMetadataReadable);
+        Assert.False(diagnostics.StoreMetadataProtected);
+        Assert.True(diagnostics.EncryptionEnabled);
+        Assert.Equal(3, diagnostics.PlaintextProtectedDocumentCount);
+        Assert.Single(matches);
+        Assert.Equal(id, matches[0].Id);
+        Assert.DoesNotContain(directory, serialized, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("plaintext-index-secret", serialized, StringComparison.Ordinal);
+        Assert.DoesNotContain("modelHash", serialized, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -3073,6 +3219,32 @@ public sealed class JsonColdStoreDbContextOptionsBuilderExtensionsTests
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         await File.WriteAllTextAsync(path, contents);
+    }
+
+    private static async Task WriteStoreMetadataAsync(
+        string directory,
+        JsonColdStoreStoreMetadata metadata)
+    {
+        Directory.CreateDirectory(directory);
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(metadata, StoreJsonOptions);
+        await File.WriteAllBytesAsync(Path.Combine(directory, JsonColdStoreCatalog.StoreFileName), bytes);
+    }
+
+    private static async Task WriteModelCatalogAsync(string directory, IModel model)
+    {
+        var descriptor = JsonColdStoreModelDescriptor.Create(model);
+        var snapshot = JsonColdStoreModelSnapshot.FromDescriptor(descriptor);
+        var hashBytes = JsonSerializer.SerializeToUtf8Bytes(snapshot, ModelHashJsonOptions);
+        var document = new JsonColdStoreModelDocument
+        {
+            FormatVersion = 1,
+            CreatedAt = DateTimeOffset.UtcNow,
+            ProviderVersion = JsonColdStoreProviderInfo.Version,
+            ModelHash = Convert.ToHexString(SHA256.HashData(hashBytes)).ToLowerInvariant(),
+            Model = snapshot,
+        };
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(document, ModelCatalogJsonOptions);
+        await File.WriteAllBytesAsync(Path.Combine(directory, JsonColdStoreModelCatalog.ModelFileName), bytes);
     }
 
     private static async Task<string> CreateRequiredLinkedDirectoryWithFileAsync(
