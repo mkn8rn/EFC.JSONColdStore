@@ -58,6 +58,34 @@ public sealed class JsonColdStoreCatalogTests
     }
 
     [Fact]
+    public async Task EnsureInitializedAsyncRejectsReparsePointStoreMetadata()
+    {
+        var root = NewTempDirectory();
+        var outside = NewTempDirectory();
+        var outsideFile = Path.Combine(outside, JsonColdStoreCatalog.StoreFileName);
+        await File.WriteAllTextAsync(outsideFile, "outside metadata payload");
+        var storePath = Path.Combine(root, JsonColdStoreCatalog.StoreFileName);
+        JsonColdStoreReparsePointTestHelper.CreateRequiredFileLink(
+            storePath,
+            outsideFile,
+            nameof(EnsureInitializedAsyncRejectsReparsePointStoreMetadata));
+        var options = new JsonColdStoreOptionsBuilder(root)
+            .UseFsyncOnWrite(false)
+            .Build();
+        var catalog = new JsonColdStoreCatalog(options);
+
+        var exception = await Assert.ThrowsAsync<JsonColdStoreUnsafePathException>(
+            () => catalog.EnsureInitializedAsync());
+
+        Assert.Contains("metadata", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(root, exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(storePath, exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(outsideFile, exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("outside metadata payload", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("outside metadata payload", await File.ReadAllTextAsync(outsideFile));
+    }
+
+    [Fact]
     public async Task EnsureInitializedAsyncReopensExistingMetadataWithoutChangingStoreId()
     {
         var root = NewTempDirectory();
@@ -72,6 +100,113 @@ public sealed class JsonColdStoreCatalogTests
 
         Assert.Equal(first.StoreId, second.StoreId);
         Assert.Equal(first.CreatedAt, second.CreatedAt);
+    }
+
+    [Fact]
+    public async Task LoadIfExistsOrCreateTransientAsyncReturnsTransientMetadataWhenStoreMetadataIsMissing()
+    {
+        var root = NewTempDirectory();
+        var options = new JsonColdStoreOptionsBuilder(root)
+            .UseCompression(JsonColdStoreCompression.None)
+            .UseStartupMode(JsonColdStoreStartupMode.FullHydration)
+            .UseFullScanPolicy(JsonColdStoreScanPolicy.AllowExplicitScans)
+            .UseFsyncOnWrite(false)
+            .Build();
+        var catalog = new JsonColdStoreCatalog(options);
+
+        var metadata = await catalog.LoadIfExistsOrCreateTransientAsync();
+
+        Assert.NotEqual(Guid.Empty, metadata.StoreId);
+        Assert.Equal(JsonColdStoreCatalog.CurrentFormatVersion, metadata.FormatVersion);
+        Assert.Equal(JsonColdStoreCompression.None, metadata.Policy.Compression);
+        Assert.Equal(JsonColdStoreStartupMode.FullHydration, metadata.Policy.StartupMode);
+        Assert.Equal(JsonColdStoreScanPolicy.AllowExplicitScans, metadata.Policy.FullScanPolicy);
+        Assert.False(metadata.Policy.EncryptionEnabled);
+        Assert.False(File.Exists(Path.Combine(root, JsonColdStoreCatalog.StoreFileName)));
+    }
+
+    [Fact]
+    public async Task LoadIfExistsOrCreateTransientAsyncLoadsExistingMetadata()
+    {
+        var root = NewTempDirectory();
+        var expected = JsonColdStoreStoreMetadata.CreateNew(
+            new JsonColdStoreOptionsBuilder(root)
+                .UseCompression(JsonColdStoreCompression.Brotli)
+                .Build(),
+            providerVersion: "test");
+        await WriteMetadataAsync(root, expected);
+        var options = new JsonColdStoreOptionsBuilder(root)
+            .UseFsyncOnWrite(false)
+            .Build();
+        var catalog = new JsonColdStoreCatalog(options);
+
+        var metadata = await catalog.LoadIfExistsOrCreateTransientAsync();
+
+        Assert.Equal(expected.StoreId, metadata.StoreId);
+        Assert.Equal(expected.CreatedAt, metadata.CreatedAt);
+        Assert.Equal(JsonColdStoreCompression.Brotli, metadata.Policy.Compression);
+    }
+
+    [Fact]
+    public async Task LoadIfExistsOrCreateTransientAsyncRejectsCorruptStoreMetadata()
+    {
+        var root = NewTempDirectory();
+        await File.WriteAllTextAsync(Path.Combine(root, JsonColdStoreCatalog.StoreFileName), "not json");
+        var options = new JsonColdStoreOptionsBuilder(root)
+            .UseFsyncOnWrite(false)
+            .Build();
+        var catalog = new JsonColdStoreCatalog(options);
+
+        await Assert.ThrowsAsync<JsonException>(() => catalog.LoadIfExistsOrCreateTransientAsync());
+    }
+
+    [Fact]
+    public async Task LoadIfExistsOrCreateTransientAsyncRequiresKeyForProtectedMetadata()
+    {
+        var root = NewTempDirectory();
+        using var key = JsonColdStoreEncryptionKey.FromBytes(new byte[32]);
+        var encryptedOptions = new JsonColdStoreOptionsBuilder(root)
+            .UseEncryptionKey(key)
+            .UseFsyncOnWrite(false)
+            .Build();
+        await new JsonColdStoreCatalog(encryptedOptions).EnsureInitializedAsync();
+        var plaintextOptions = new JsonColdStoreOptionsBuilder(root)
+            .UseFsyncOnWrite(false)
+            .Build();
+        var catalog = new JsonColdStoreCatalog(plaintextOptions);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => catalog.LoadIfExistsOrCreateTransientAsync());
+
+        Assert.Contains("encryption key", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task LoadIfExistsOrCreateTransientAsyncRejectsReparsePointStoreMetadata()
+    {
+        var root = NewTempDirectory();
+        var outside = NewTempDirectory();
+        var outsideFile = Path.Combine(outside, JsonColdStoreCatalog.StoreFileName);
+        await File.WriteAllTextAsync(outsideFile, "outside transient metadata payload");
+        var storePath = Path.Combine(root, JsonColdStoreCatalog.StoreFileName);
+        JsonColdStoreReparsePointTestHelper.CreateRequiredFileLink(
+            storePath,
+            outsideFile,
+            nameof(LoadIfExistsOrCreateTransientAsyncRejectsReparsePointStoreMetadata));
+        var options = new JsonColdStoreOptionsBuilder(root)
+            .UseFsyncOnWrite(false)
+            .Build();
+        var catalog = new JsonColdStoreCatalog(options);
+
+        var exception = await Assert.ThrowsAsync<JsonColdStoreUnsafePathException>(
+            () => catalog.LoadIfExistsOrCreateTransientAsync());
+
+        Assert.Contains("metadata", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(root, exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(storePath, exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(outsideFile, exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("outside transient metadata payload", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("outside transient metadata payload", await File.ReadAllTextAsync(outsideFile));
     }
 
     [Fact]

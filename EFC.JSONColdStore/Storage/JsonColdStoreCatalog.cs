@@ -28,7 +28,7 @@ internal sealed class JsonColdStoreCatalog
         JsonColdStoreDirectoryGuard.CreateDatabaseRoot(_options.DatabaseDirectory);
 
         var storeFile = GetStoreFilePath();
-        if (File.Exists(storeFile))
+        if (StoreFileExists(storeFile))
             return await LoadAndValidateAsync(cancellationToken);
 
         var metadata = JsonColdStoreStoreMetadata.CreateNew(_options, JsonColdStoreProviderInfo.Version);
@@ -42,7 +42,7 @@ internal sealed class JsonColdStoreCatalog
         JsonColdStoreDirectoryGuard.ThrowIfExistingDatabaseRootIsReparsePoint(_options.DatabaseDirectory);
 
         var storeFile = GetStoreFilePath();
-        return File.Exists(storeFile)
+        return StoreFileExists(storeFile)
             ? await LoadAndValidateAsync(cancellationToken)
             : JsonColdStoreStoreMetadata.CreateNew(_options, JsonColdStoreProviderInfo.Version);
     }
@@ -147,6 +147,13 @@ internal sealed class JsonColdStoreCatalog
     private string GetStoreFilePath() =>
         JsonColdStorePathValidator.GetSafeChildPath(_options.DatabaseDirectory, StoreFileName);
 
+    private static bool StoreFileExists(string storeFile)
+    {
+        JsonColdStoreFileGuard.ThrowIfReparsePoint(
+            storeFile,
+            "The JSONColdStore metadata file cannot be a reparse point.");
+        return File.Exists(storeFile);
+    }
 }
 
 internal sealed record JsonColdStoreStoreMetadata
